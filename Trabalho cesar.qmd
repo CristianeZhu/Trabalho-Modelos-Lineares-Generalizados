@@ -1,0 +1,61 @@
+---
+title: "Modelagem em dados da PRF"
+author: "Cristiane Huang Zhu e Júlia Ferreira Zorzo"
+format: html
+editor: visual
+---
+
+# Tema: Quais características estão associadas à presença de vítimas graves ou fatais no Rio de Janeiro?
+
+# Dados
+
+```{r}
+# Fonte: https://www.gov.br/prf/pt-br/acesso-a-informacao/dados-abertos/dadosabertos-da-prf
+# Data da extração: 29/10/2026
+# Última modificação do site em 28/07/2026 15:45
+
+library(readr)
+dados <-  read_delim("datatran2026.csv", 
+    delim = ";", escape_double = FALSE, trim_ws = TRUE, locale = locale(encoding = "ISO-8859-1" ))
+# 48712 observações e 30 colunas
+
+# Classe dos dados
+glimpse(dados)
+(classe <- str(dados))
+# 1 coluna de data
+# 1 coluna de tempo
+# 11 colunas número
+# 17 colunas de caracteres
+
+# Presença de dados faltantes
+colSums(is.na(dados))
+# dado faltante em delegacia, uop, classificação faltante e regional
+
+df_faltantes <- dados %>% 
+  filter(if_any(everything(), is.na))
+# duas obs com NA
+```
+
+## Pré-processamento dos dados
+
+```{r}
+#install.packages("tidyverse")
+library(tidyverse)
+
+# Filtrar só dados do Rio de Jnaneiro
+dados %>%
+  filter(uf == "RJ")
+
+# Variável Resposta: variável binária, definida como 1 quando feridos_graves > 0 ou mortos > 0 e 0 quando ambos são iguais a 0 
+# Para isso, é preciso criar uma nova variável binária que combine as duas colunas
+dados <- dados %>%
+  mutate(
+    vitima_grave_fatal = if_else(
+      feridos_graves > 0 | mortos > 0,
+      1,
+      0
+    )
+  )
+
+```
+
