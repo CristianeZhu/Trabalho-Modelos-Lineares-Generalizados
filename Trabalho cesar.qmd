@@ -1,11 +1,11 @@
 ---
 title: "Modelagem em dados da PRF"
-author: "Cristiane Huang Zhu e Júlia Ferreira Zorzo"
+author: "Cristiane Huang Zhu e Júlia Zorzo Ferreira"
 format: html
 editor: visual
 ---
 
-# Tema: Quais características estão associadas à presença de vítimas graves ou fatais no Rio de Janeiro?
+# Tema/OBJETIVO: Quais características estão associadas à presença de vítimas graves ou fatais no Rio de Janeiro?
 
 # Dados
 
@@ -13,11 +13,15 @@ editor: visual
 # Fonte: https://www.gov.br/prf/pt-br/acesso-a-informacao/dados-abertos/dadosabertos-da-prf
 # Data da extração: 29/10/2026
 # Última modificação do site em 28/07/2026 15:45
+# Período efetivamente coberto pelos dados: 01/01/2026 a 31/08/2026
 
 library(readr)
+library(tidyr)
+library(dplyr)
 dados <-  read_delim("datatran2026.csv", 
     delim = ";", escape_double = FALSE, trim_ws = TRUE, locale = locale(encoding = "ISO-8859-1" ))
-# 48712 observações e 30 colunas
+# TAMANHO: 48.712 observações e 30 colunas
+# UNIDADE: sinistro
 
 # Classe dos dados
 glimpse(dados)
@@ -29,7 +33,7 @@ glimpse(dados)
 
 # Presença de dados faltantes
 colSums(is.na(dados))
-# dado faltante em delegacia, uop, classificação faltante e regional
+# 1 dado faltante em delegacia, uop, classificação acidente e regional
 
 df_faltantes <- dados %>% 
   filter(if_any(everything(), is.na))
@@ -43,8 +47,10 @@ df_faltantes <- dados %>%
 library(tidyverse)
 
 # Filtrar só dados do Rio de Jnaneiro
-dados %>%
+dados <- dados %>%
   filter(uf == "RJ")
+nrow(dados)
+# NOVO TAMANHO: 4.366
 
 # Variável Resposta: variável binária, definida como 1 quando feridos_graves > 0 ou mortos > 0 e 0 quando ambos são iguais a 0 
 # Para isso, é preciso criar uma nova variável binária que combine as duas colunas
@@ -58,4 +64,120 @@ dados <- dados %>%
   )
 
 ```
+
+## sugestão Claude: Não usar como preditores: mortos, feridos_graves, feridos e classificacao_acidente, que revelam a resposta; feridos_leves e ilesos também são componentes das mesmas contagens, é mais seguro excluí-los.
+
+# Análise Exploratória
+```{r}
+# Proporção de 0 e 1 da var. resposta
+tab_resp <- dados %>%
+  count(vitima_grave_fatal) %>%
+  mutate(prop = round(100 * n / sum(n), 1))
+tab_resp
+## 0: 80%, 1: 20%
+
+ggplot(dados, aes(factor(vitima_grave_fatal))) +
+  geom_bar(fill = "steelblue") +
+  labs(x = "Vítima grave/fatal (0 = não, 1 = sim)", y = "Sinistros")
+
+
+# Preditores quantitativos
+summary(dados %>% select(km, hora, veiculos, pessoas))
+
+dados %>%
+  select(vitima_grave_fatal, km, hora, veiculos, pessoas) %>%
+  pivot_longer(-vitima_grave_fatal) %>%
+  ggplot(aes(factor(vitima_grave_fatal), value)) +
+  geom_boxplot() +
+  facet_wrap(~name, scales = "free_y") +
+  labs(x = "Vítima grave/fatal", y = NULL)
+## sem diferenças significativas nas classes
+
+
+# Preditores qualitativos: proporção de resposta=1 por categoria
+prop_cat <- function(var) {
+  dados %>%
+    filter(!is.na(.data[[var]])) %>%
+    group_by(categoria = .data[[var]]) %>%
+    summarise(n = n(), eventos = sum(vitima_grave_fatal),
+              prop = round(eventos / n, 3), .groups = "drop") %>%
+    arrange(desc(prop))
+}
+
+vars_cat <- c("fase_dia", "tipo_pista", "tracado_via", "condicao_metereologica",
+              "fim_semana", "tipo_acidente", "causa_acidente")
+map(set_names(vars_cat), prop_cat)
+
+
+prop_cat("fase_dia") %>%
+  ggplot(aes(reorder(categoria, prop), prop)) +
+  geom_col(fill = "steelblue") + coord_flip() +
+  labs(x = NULL, y = "Proporção com vítima grave/fatal")
+## mais em plena noite
+
+prop_cat("tipo_pista") %>%
+  ggplot(aes(reorder(categoria, prop), prop)) +
+  geom_col(fill = "steelblue") + coord_flip() +
+  labs(x = NULL, y = "Proporção com vítima grave/fatal")
+## mais em pista simples
+
+prop_cat("tracado_via") %>%
+  slice_max(prop, n = 20) %>%
+  ggplot(aes(reorder(categoria, prop), prop)) +
+  geom_col(fill = "steelblue") + coord_flip() +
+  labs(x = NULL, y = "Proporção com vítima grave/fatal")
+## mais viaduto;declive;reta nas 20 categorias com mais proporcao de fatais: algumas só tem vitimas fatais
+
+prop_cat("tracado_via") %>%
+  slice_max(n, n = 20) %>%
+  ggplot(aes(reorder(categoria, prop), prop)) +
+  geom_col(fill = "steelblue") + coord_flip() +
+  labs(x = NULL, y = "Proporção com vítima grave/fatal")
+## mais ponte;reta nas 20 categorias mais frequentes da var tracado via
+
+prop_cat("condicao_metereologica") %>%
+  ggplot(aes(reorder(categoria, prop), prop)) +
+  geom_col(fill = "steelblue") + coord_flip() +
+  labs(x = NULL, y = "Proporção com vítima grave/fatal")
+## mais com vento
+
+prop_cat("fim_semana") %>%
+  ggplot(aes(reorder(categoria, prop), prop)) +
+  geom_col(fill = "steelblue") + coord_flip() +
+  labs(x = NULL, y = "Proporção com vítima grave/fatal")
+## mais no fds
+
+prop_cat("tipo_acidente") %>%
+  ggplot(aes(reorder(categoria, prop), prop)) +
+  geom_col(fill = "steelblue") + coord_flip() +
+  labs(x = NULL, y = "Proporção com vítima grave/fatal")
+## mais em sinistro pessoal e atropelamento de pedestre
+
+prop_cat("causa_acidente") %>%
+  ggplot(aes(reorder(categoria, prop), prop)) +
+  geom_col(fill = "steelblue") + coord_flip() +
+  labs(x = NULL, y = "Proporção com vítima grave/fatal")
+## mais em suicidio presumido e participacao de racha
+
+
+# Resposta vs. variáveis contínuas (checar linearidade no logito)
+dados %>%
+  mutate(faixa_hora = floor(hora)) %>%
+  group_by(faixa_hora) %>%
+  summarise(p = mean(vitima_grave_fatal), n = n()) %>%
+  ggplot(aes(faixa_hora, p)) + geom_line() + geom_point()
+## relacao nao linear: madrugada tem mais vitimas fatais
+
+
+# Correlação entre preditores quantitativos (multicolinearidade)
+cor(dados %>% select(km, hora, veiculos, pessoas), use = "complete.obs")
+## km, hora e os demais: correlações praticamente nulas -> ausencia de multicolinearidade.
+## veiculos e pessoas: 0,52, a única correlação relevante -> mais veículos significa mais ocupantes. É moderada, não alarmante, mas somada ao fato de pessoas incluir as vítimas, "reforça deixar pessoas fora do modelo (ou justificar a inclusão). Se mantiver as duas, conferir o VIF no diagnóstico (car::vif(modelo)), com atenção a valores acima de 5."
+
+## a continuar...
+```
+
+
+
+
 
