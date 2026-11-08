@@ -68,6 +68,12 @@ dados <- dados %>%
 ## sugestão Claude: Não usar como preditores: mortos, feridos_graves, feridos e classificacao_acidente, que revelam a resposta; feridos_leves e ilesos também são componentes das mesmas contagens, é mais seguro excluí-los.
 
 # Análise Exploratória
+
+Preditores candidatos: fase do dia, condição meteorológica, tipo de pista,
+traçado da via, uso do solo, dia da semana, tipo de sinistro, número de veículos envolvidos e horário (horas)
+
+Fazer uma análise exploratória dessas variáveis
+
 ```{r}
 # Proporção de 0 e 1 da var. resposta
 tab_resp <- dados %>%
@@ -82,10 +88,18 @@ ggplot(dados, aes(factor(vitima_grave_fatal))) +
 
 
 # Preditores quantitativos
-summary(dados %>% select(km, hora, veiculos, pessoas))
+## hora, km, num veiculos, pessoas, será que n usamos só as q o prof colocou?
+
+## Extração da hora e ajustar km p numérico
+dados <- dados %>%
+  mutate(hora = as.numeric(substr(horario, 1, 2)))
+
+
+################ tirei o km pq n faz sentido, é o km da rodovia em q o carro estava e n a velocidade
+summary(dados %>% select(hora, veiculos, pessoas))
 
 dados %>%
-  select(vitima_grave_fatal, km, hora, veiculos, pessoas) %>%
+  select(vitima_grave_fatal, hora, veiculos, pessoas) %>%
   pivot_longer(-vitima_grave_fatal) %>%
   ggplot(aes(factor(vitima_grave_fatal), value)) +
   geom_boxplot() +
@@ -93,6 +107,16 @@ dados %>%
   labs(x = "Vítima grave/fatal", y = NULL)
 ## sem diferenças significativas nas classes
 
+## teste de associação individual para variáveis quantitativas
+
+wilcox.test(hora ~ vitima_grave_fatal, data = dados)
+# p-value = 0.1034, não é significativo
+
+wilcox.test(veiculos ~ vitima_grave_fatal, data = dados)
+# p-value < 2.2e-16
+
+wilcox.test(pessoas ~ vitima_grave_fatal, data = dados)
+#p-value = 1.392e-13
 
 # Preditores qualitativos: proporção de resposta=1 por categoria
 prop_cat <- function(var) {
@@ -105,7 +129,7 @@ prop_cat <- function(var) {
 }
 
 vars_cat <- c("fase_dia", "tipo_pista", "tracado_via", "condicao_metereologica",
-              "fim_semana", "tipo_acidente", "causa_acidente")
+              "dia_semana", "tipo_acidente", "causa_acidente")
 map(set_names(vars_cat), prop_cat)
 
 
@@ -121,6 +145,7 @@ prop_cat("tipo_pista") %>%
   labs(x = NULL, y = "Proporção com vítima grave/fatal")
 ## mais em pista simples
 
+#### Tá certo esse?
 prop_cat("tracado_via") %>%
   slice_max(prop, n = 20) %>%
   ggplot(aes(reorder(categoria, prop), prop)) +
@@ -141,7 +166,7 @@ prop_cat("condicao_metereologica") %>%
   labs(x = NULL, y = "Proporção com vítima grave/fatal")
 ## mais com vento
 
-prop_cat("fim_semana") %>%
+prop_cat("dia_semana") %>%
   ggplot(aes(reorder(categoria, prop), prop)) +
   geom_col(fill = "steelblue") + coord_flip() +
   labs(x = NULL, y = "Proporção com vítima grave/fatal")
@@ -152,6 +177,7 @@ prop_cat("tipo_acidente") %>%
   geom_col(fill = "steelblue") + coord_flip() +
   labs(x = NULL, y = "Proporção com vítima grave/fatal")
 ## mais em sinistro pessoal e atropelamento de pedestre
+# bom candidato
 
 prop_cat("causa_acidente") %>%
   ggplot(aes(reorder(categoria, prop), prop)) +
@@ -176,8 +202,3 @@ cor(dados %>% select(km, hora, veiculos, pessoas), use = "complete.obs")
 
 ## a continuar...
 ```
-
-
-
-
-
