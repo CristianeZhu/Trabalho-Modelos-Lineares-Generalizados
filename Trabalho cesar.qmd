@@ -108,9 +108,10 @@ dados %>%
 ## sem diferenças significativas nas classes
 
 ## teste de associação individual para variáveis quantitativas
+# serve como indicativos de bons preditores
 
 wilcox.test(hora ~ vitima_grave_fatal, data = dados)
-# p-value = 0.1034, não é significativo
+# p-value = 0.1034
 
 wilcox.test(veiculos ~ vitima_grave_fatal, data = dados)
 # p-value < 2.2e-16
@@ -202,3 +203,9 @@ cor(dados %>% select(km, hora, veiculos, pessoas), use = "complete.obs")
 
 ## a continuar...
 ```
+
+
+```{r}
+## testar varios conjuntos de preditores...
+```
+
