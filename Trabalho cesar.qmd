@@ -42,6 +42,8 @@ df_faltantes <- dados %>%
 
 ## Pré-processamento dos dados
 
+Filtro do estado que vamos analisar e transformação das variáveis para a variável resposta binária
+
 ```{r}
 #install.packages("tidyverse")
 library(tidyverse)
@@ -64,6 +66,62 @@ dados <- dados %>%
   )
 
 ```
+
+
+Tratamentos
+```{r}
+## Tratamentos pendentes nas variaveis
+### tracado_via tem muitas categorias: vou agrupar
+dados %>% count(tracado_via, sort = TRUE) %>% print(n = Inf)
+
+dados <- dados %>%
+  mutate(
+    via_curva   = as.integer(str_detect(tracado_via, "Curva")),
+    via_declive = as.integer(str_detect(tracado_via, "Declive")),
+    via_aclive  = as.integer(str_detect(tracado_via, "Aclive")),
+    via_inters  = as.integer(str_detect(tracado_via, "Interseção|Rotatória|Retorno")),
+    via_obras   = as.integer(str_detect(tracado_via, "Em Obras|Desvio")),
+    via_ponte   = as.integer(str_detect(tracado_via, "Ponte|Viaduto|Túnel"))
+  )
+
+dados %>%
+  summarise(across(starts_with("via_"),
+                   list(n = ~ sum(.x), ev = ~ sum(.x * vitima_grave_fatal))))
+
+# A indicadora de obras/desvio tem 29 eventos, abaixo do limite prático adotado (30), mantida por relevância ao problema e monitorada no ajuste.
+```
+Ignorados
+
+```{r}
+## Questao do estado fisico ignorado pedido pelo professor -> talvez deveria ter sido feito logo no começo, pra ter os numeros das outras variaveis ja descartando os excluídos:
+
+dados %>% count(vitima_grave_fatal, com_ignorado = ignorados > 0) # 537 nao fatais/graves ignorados
+### Nova base: Sinistros sem vítima grave/fatal identificada, mas com pessoas de estado físico ignorado (n = 537), foram excluídos da análise principal, pois a resposta é indeterminada.
+dados_princ <- dados %>%
+  filter(!(vitima_grave_fatal == 0 & ignorados > 0))
+nrow(dados_princ) # 3829 dados agora
+
+
+## nas var categoricas:
+dados %>% select(fase_dia, condicao_metereologica, tipo_pista, uso_solo, dia_semana, tipo_acidente) %>%
+  summarise(across(everything(), ~ sum(.x == "Ignorado", na.rm = TRUE))) # 52 em condi meter
+
+dados %>% filter(condicao_metereologica == "Ignorado") %>% count(vitima_grave_fatal)
+
+### exclusao desses 52 por representarem poucos casos
+dados_princ <- dados %>%
+  filter(!(vitima_grave_fatal == 0 & ignorados > 0),
+         condicao_metereologica != "Ignorado")
+nrow(dados_princ) # 3785
+
+
+
+## categorias de tipo de acidente com menos de 30 ocorrencias viram Outros; colisao traseira é a categoria com mais ocorrencias, entao sera usada como referencia pro modelo 
+dados <- dados %>%
+  mutate(tipo_acidente_g = fct_lump_min(factor(tipo_acidente), min = 30, other_level = "Outros"),
+         tipo_acidente_g = relevel(tipo_acidente_g, ref = "Colisão traseira"))
+```
+
 
 ## sugestão Claude: Não usar como preditores: mortos, feridos_graves, feridos e classificacao_acidente, que revelam a resposta; feridos_leves e ilesos também são componentes das mesmas contagens, é mais seguro excluí-los.
 
@@ -248,60 +306,39 @@ dados %>%
   labs(x = "Veículos envolvidos", y = "Proporção com vítima grave/fatal")
 ```
 
-## Tratamentos
 ```{r}
-## Tratamentos pendentes nas variaveis
-### tracado_via tem muitas categorias: vou agrupar
-dados %>% count(tracado_via, sort = TRUE) %>% print(n = Inf)
+## teste de associação individual para variáveis quantitativas
+# serve como indicativos de bons preditores
+wilcox.test(veiculos ~ vitima_grave_fatal, data = dados)
+# p-value < 2.2e-16
 
-dados <- dados %>%
-  mutate(
-    via_curva   = as.integer(str_detect(tracado_via, "Curva")),
-    via_declive = as.integer(str_detect(tracado_via, "Declive")),
-    via_aclive  = as.integer(str_detect(tracado_via, "Aclive")),
-    via_inters  = as.integer(str_detect(tracado_via, "Interseção|Rotatória|Retorno")),
-    via_obras   = as.integer(str_detect(tracado_via, "Em Obras|Desvio")),
-    via_ponte   = as.integer(str_detect(tracado_via, "Ponte|Viaduto|Túnel"))
-  )
+## teste de associação individual para variáveis qualitativas
+## Revisar pq tem muitas variáveis com categorias muito pequenas
+map(set_names(vars8), ~ {
+  tab <- table(dados[[.x]], dados$vitima_grave_fatal)
 
-dados %>%
-  summarise(across(starts_with("via_"),
-                   list(n = ~ sum(.x), ev = ~ sum(.x * vitima_grave_fatal))))
-
-# A indicadora de obras/desvio tem 29 eventos, abaixo do limite prático adotado (30), mantida por relevância ao problema e monitorada no ajuste.
-```
-## Ignorados
-```{r}
-## Questao do estado fisico ignorado pedido pelo professor -> talvez deveria ter sido feito logo no começo, pra ter os numeros das outras variaveis ja descartando os excluídos:
-
-dados %>% count(vitima_grave_fatal, com_ignorado = ignorados > 0) # 537 nao fatais/graves ignorados
-### Nova base: Sinistros sem vítima grave/fatal identificada, mas com pessoas de estado físico ignorado (n = 537), foram excluídos da análise principal, pois a resposta é indeterminada.
-dados_princ <- dados %>%
-  filter(!(vitima_grave_fatal == 0 & ignorados > 0))
-nrow(dados_princ) # 3829 dados agora
-
-
-## nas var categoricas:
-dados %>% select(fase_dia, condicao_metereologica, tipo_pista, uso_solo, dia_semana, tipo_acidente) %>%
-  summarise(across(everything(), ~ sum(.x == "Ignorado", na.rm = TRUE))) # 52 em condi meter
-
-dados %>% filter(condicao_metereologica == "Ignorado") %>% count(vitima_grave_fatal)
-
-### exclusao desses 52 por representarem poucos casos
-dados_princ <- dados %>%
-  filter(!(vitima_grave_fatal == 0 & ignorados > 0),
-         condicao_metereologica != "Ignorado")
-nrow(dados_princ) # 3785
-
-
-
-## categorias de tipo de acidente com menos de 30 ocorrencias viram Outros; colisao traseira é a categoria com mais ocorrencias, entao sera usada como referencia pro modelo 
-dados <- dados %>%
-  mutate(tipo_acidente_g = fct_lump_min(factor(tipo_acidente), min = 30, other_level = "Outros"),
-         tipo_acidente_g = relevel(tipo_acidente_g, ref = "Colisão traseira"))
+  cat("\nVariável:", .x, "\n")
+  print(tab)
+  print(chisq.test(tab))
+})
 ```
 
-
+## Teste de modelos
 ```{r}
 ## testar varios conjuntos de preditores...
+##começar com o modelo completo e ir tirando preditores?
+
+m0 <- glm(vitima_grave_fatal ~ 1, family = binomial, data = dados)
+
+
+modelo_completo <- glm(
+  vitima_grave_fatal ~ veiculos + fase_dia + condicao_metereologica + tipo_pista + tracado_via+
+           uso_solo + dia_semana + tipo_acidente,
+  data = dados,
+  family = binomial(link = "logit")
+)
+summary(modelo_completo)
+
+# ver quais var importam
+car::Anova(modelo_completo, type = "II") # agrupar trancado_via
 ```
