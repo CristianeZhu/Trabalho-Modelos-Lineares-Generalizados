@@ -70,11 +70,13 @@ dados <- dados %>%
 # Análise Exploratória
 
 Preditores candidatos: fase do dia, condição meteorológica, tipo de pista,
-traçado da via, uso do solo, dia da semana, tipo de sinistro, número de veículos envolvidos e horário (horas)
+traçado da via, uso do solo, dia da semana, tipo de sinistro, número de veículos envolvidos 
 
-Fazer uma análise exploratória dessas variáveis
+Fazer uma análise exploratória dessas variáveis:
 
 ```{r}
+# Vamos verificar os preditores candidatos
+
 # Proporção de 0 e 1 da var. resposta
 tab_resp <- dados %>%
   count(vitima_grave_fatal) %>%
@@ -88,24 +90,23 @@ ggplot(dados, aes(factor(vitima_grave_fatal))) +
 
 
 # Preditores quantitativos
-## hora, km, num veiculos, pessoas, será que n usamos só as q o prof colocou?
 
-## Extração da hora e ajustar km p numérico
+################ retirada do km pq n faz sentido, é o km da rodovia em q o carro estava e n a velocidade; e retirada de pessoas: construída a partir das contagens de vítimas (inclui feridos graves e mortos), que definem a resposta
+
+# provavelmente nao sera usada, extracao da hora:
 dados <- dados %>%
   mutate(hora = as.numeric(substr(horario, 1, 2)))
 
-
-################ tirei o km pq n faz sentido, é o km da rodovia em q o carro estava e n a velocidade
-summary(dados %>% select(hora, veiculos, pessoas))
+summary(dados %>% select(hora, veiculos))
 
 dados %>%
-  select(vitima_grave_fatal, hora, veiculos, pessoas) %>%
+  select(vitima_grave_fatal, hora, veiculos) %>%
   pivot_longer(-vitima_grave_fatal) %>%
   ggplot(aes(factor(vitima_grave_fatal), value)) +
   geom_boxplot() +
   facet_wrap(~name, scales = "free_y") +
   labs(x = "Vítima grave/fatal", y = NULL)
-## sem diferenças significativas nas classes
+## pouca diferença visual no boxplot; veiculos associado no teste
 
 ## teste de associação individual para variáveis quantitativas
 # serve como indicativos de bons preditores
@@ -115,9 +116,6 @@ wilcox.test(hora ~ vitima_grave_fatal, data = dados)
 
 wilcox.test(veiculos ~ vitima_grave_fatal, data = dados)
 # p-value < 2.2e-16
-
-wilcox.test(pessoas ~ vitima_grave_fatal, data = dados)
-#p-value = 1.392e-13
 
 # Preditores qualitativos: proporção de resposta=1 por categoria
 prop_cat <- function(var) {
@@ -197,15 +195,113 @@ dados %>%
 
 
 # Correlação entre preditores quantitativos (multicolinearidade)
-cor(dados %>% select(km, hora, veiculos, pessoas), use = "complete.obs")
-## km, hora e os demais: correlações praticamente nulas -> ausencia de multicolinearidade.
-## veiculos e pessoas: 0,52, a única correlação relevante -> mais veículos significa mais ocupantes. É moderada, não alarmante, mas somada ao fato de pessoas incluir as vítimas, "reforça deixar pessoas fora do modelo (ou justificar a inclusão). Se mantiver as duas, conferir o VIF no diagnóstico (car::vif(modelo)), com atenção a valores acima de 5."
+cor(dados %>% select(hora, veiculos), use = "complete.obs")
+## ausência de multicolinearidade entre os preditores quantitativos
+```
 
-## a continuar...
+#2a. Análise Exploratória
+```{r}
+## Continuação da análise exploratória: somente os 8 preditores candidatos do professor
+# nao incluindo veiculos ainda por ser quantitativa
+vars8 <- c("fase_dia", "condicao_metereologica", "tipo_pista", "tracado_via",
+           "uso_solo", "dia_semana", "tipo_acidente") 
+
+# apoio pro grafico
+tab_prop <- function(var) {
+  dados %>%
+    filter(!is.na(.data[[var]])) %>%
+    group_by(categoria = .data[[var]]) %>%
+    summarise(n = n(), eventos = sum(vitima_grave_fatal),
+              prop = round(eventos / n, 3), .groups = "drop") %>%
+    arrange(desc(prop))
+}
+
+# Gráfico de todas as preditoras
+graf_prop <- function(var, n_min = 30, top = 20) {
+  tab_prop(var) %>%
+    filter(n >= n_min) %>%
+    slice_max(n, n = top) %>%
+    ggplot(aes(reorder(categoria, prop), prop)) +
+    geom_col(fill = "steelblue") +
+    geom_text(aes(label = paste0("n=", n)), hjust = -0.1, size = 3) +
+    coord_flip() +
+    scale_y_continuous(expand = expansion(mult = c(0, 0.15))) +
+    labs(x = NULL, y = "Proporção com vítima grave/fatal", title = var)
+}
+
+# tabelas completas (bem extenso e pouco visual)
+map(set_names(vars8), ~ tab_prop(.x) %>% print(n = Inf))
+
+# Gráficos visualizacao
+for (v in vars8) print(graf_prop(v))
+
+
+## para veiculos em relacao a vitimas graves/fatais (resposta):
+dados %>%
+  mutate(veic = factor(if_else(veiculos >= 4, "4+", as.character(veiculos)))) %>%
+  group_by(veic) %>%
+  summarise(n = n(), eventos = sum(vitima_grave_fatal),
+            prop = round(eventos / n, 3), .groups = "drop") %>%
+  ggplot(aes(veic, prop)) +
+  geom_col(fill = "steelblue") +
+  geom_text(aes(label = paste0("n=", n)), vjust = -0.3, size = 3) +
+  labs(x = "Veículos envolvidos", y = "Proporção com vítima grave/fatal")
+```
+
+## Tratamentos
+```{r}
+## Tratamentos pendentes nas variaveis
+### tracado_via tem muitas categorias: vou agrupar
+dados %>% count(tracado_via, sort = TRUE) %>% print(n = Inf)
+
+dados <- dados %>%
+  mutate(
+    via_curva   = as.integer(str_detect(tracado_via, "Curva")),
+    via_declive = as.integer(str_detect(tracado_via, "Declive")),
+    via_aclive  = as.integer(str_detect(tracado_via, "Aclive")),
+    via_inters  = as.integer(str_detect(tracado_via, "Interseção|Rotatória|Retorno")),
+    via_obras   = as.integer(str_detect(tracado_via, "Em Obras|Desvio")),
+    via_ponte   = as.integer(str_detect(tracado_via, "Ponte|Viaduto|Túnel"))
+  )
+
+dados %>%
+  summarise(across(starts_with("via_"),
+                   list(n = ~ sum(.x), ev = ~ sum(.x * vitima_grave_fatal))))
+
+# A indicadora de obras/desvio tem 29 eventos, abaixo do limite prático adotado (30), mantida por relevância ao problema e monitorada no ajuste.
+```
+## Ignorados
+```{r}
+## Questao do estado fisico ignorado pedido pelo professor -> talvez deveria ter sido feito logo no começo, pra ter os numeros das outras variaveis ja descartando os excluídos:
+
+dados %>% count(vitima_grave_fatal, com_ignorado = ignorados > 0) # 537 nao fatais/graves ignorados
+### Nova base: Sinistros sem vítima grave/fatal identificada, mas com pessoas de estado físico ignorado (n = 537), foram excluídos da análise principal, pois a resposta é indeterminada.
+dados_princ <- dados %>%
+  filter(!(vitima_grave_fatal == 0 & ignorados > 0))
+nrow(dados_princ) # 3829 dados agora
+
+
+## nas var categoricas:
+dados %>% select(fase_dia, condicao_metereologica, tipo_pista, uso_solo, dia_semana, tipo_acidente) %>%
+  summarise(across(everything(), ~ sum(.x == "Ignorado", na.rm = TRUE))) # 52 em condi meter
+
+dados %>% filter(condicao_metereologica == "Ignorado") %>% count(vitima_grave_fatal)
+
+### exclusao desses 52 por representarem poucos casos
+dados_princ <- dados %>%
+  filter(!(vitima_grave_fatal == 0 & ignorados > 0),
+         condicao_metereologica != "Ignorado")
+nrow(dados_princ) # 3785
+
+
+
+## categorias de tipo de acidente com menos de 30 ocorrencias viram Outros; colisao traseira é a categoria com mais ocorrencias, entao sera usada como referencia pro modelo 
+dados <- dados %>%
+  mutate(tipo_acidente_g = fct_lump_min(factor(tipo_acidente), min = 30, other_level = "Outros"),
+         tipo_acidente_g = relevel(tipo_acidente_g, ref = "Colisão traseira"))
 ```
 
 
 ```{r}
 ## testar varios conjuntos de preditores...
 ```
-
