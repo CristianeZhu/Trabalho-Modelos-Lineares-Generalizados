@@ -84,6 +84,20 @@ dados <- dados %>%
     via_ponte   = as.integer(str_detect(tracado_via, "Ponte|Viaduto|Túnel"))
   )
 
+## agrupando as categorias em uma coluna só
+dados <- dados %>%
+  mutate(
+    tracado_grupo = case_when(
+      str_detect(tracado_via, "Interseção|Rotatória|Retorno") ~ "Interseção",
+      str_detect(tracado_via, "Em Obras|Desvio")              ~ "Obras",
+      str_detect(tracado_via, "Ponte|Viaduto|Túnel")          ~ "Ponte/Viaduto/Túnel",
+      str_detect(tracado_via, "Curva")                        ~ "Curva",
+      str_detect(tracado_via, "Declive")                      ~ "Declive",
+      str_detect(tracado_via, "Aclive")                       ~ "Aclive",
+      TRUE                                                    ~ "Reta/Outros"
+    ),
+    tracado_grupo = relevel(factor(tracado_grupo), ref = "Reta/Outros")
+  )
 dados %>%
   summarise(across(starts_with("via_"),
                    list(n = ~ sum(.x), ev = ~ sum(.x * vitima_grave_fatal))))
@@ -261,7 +275,7 @@ cor(dados %>% select(hora, veiculos), use = "complete.obs")
 ```{r}
 ## Continuação da análise exploratória: somente os 8 preditores candidatos do professor
 # nao incluindo veiculos ainda por ser quantitativa
-vars8 <- c("fase_dia", "condicao_metereologica", "tipo_pista", "tracado_via",
+vars8 <- c("fase_dia", "condicao_metereologica", "tipo_pista", "tracado_grupo",
            "uso_solo", "dia_semana", "tipo_acidente") 
 
 # apoio pro grafico
@@ -326,13 +340,14 @@ map(set_names(vars8), ~ {
 ## Teste de modelos
 ```{r}
 ## testar varios conjuntos de preditores...
-##começar com o modelo completo e ir tirando preditores?
+##começar com o modelo completo e ir tirando preditores? (backward)
 
+#modelo nulo
 m0 <- glm(vitima_grave_fatal ~ 1, family = binomial, data = dados)
 
-
+# modelo completo
 modelo_completo <- glm(
-  vitima_grave_fatal ~ veiculos + fase_dia + condicao_metereologica + tipo_pista + tracado_via+
+  vitima_grave_fatal ~ veiculos + fase_dia + condicao_metereologica + tipo_pista + tracado_grupo+
            uso_solo + dia_semana + tipo_acidente,
   data = dados,
   family = binomial(link = "logit")
@@ -340,5 +355,26 @@ modelo_completo <- glm(
 summary(modelo_completo)
 
 # ver quais var importam
-car::Anova(modelo_completo, type = "II") # agrupar trancado_via
+car::Anova(modelo_completo, type = "II")
+
+
+## método backward (ir retirando variáveis com base no AIC)
+## vai tirando uma variável de cada vez e calcula o AIC
+m_step <- step(modelo_completo, direction = "backward")
+summary(m_step)
+
+car::Anova(m_step, type = "II") #teste por variável ao invés de um por dummy igual no summary
+## todos significativos
+
+m_final <- step(modelo_completo, direction = "backward", trace = 0)
+summary(m_final)
+car::Anova(m_final, type = "II")
+
+## comparando o modelo escolhido com o modelo nulo e o completo
+anova(m_final, modelo_completo, test = "Chisq")  # p alto = não perdeu ajuste
+
+##Interpretação: sob a hipótese nula, uma piora de ajuste de 32,19 com 21 parâmetros extras seria esperada por acaso em cerca de 5,6% das vezes. Em média, um qui-quadrado com 21 gl vale 21, então 32 é um pouco acima do esperado, mas não muito.
+##O modelo reduzido não perde ajuste de forma significativa (a 5%), então ele é preferível: é mais simples e tem AIC menor.
+
+AIC(m0, modelo_completo, m_final) # comparação dos AIC
 ```
