@@ -35,8 +35,8 @@ glimpse(dados)
 colSums(is.na(dados))
 # 1 dado faltante em delegacia, uop, classificação acidente e regional
 
-df_faltantes <- dados %>% 
-  filter(if_any(everything(), is.na))
+(df_faltantes <- dados %>% 
+  filter(if_any(everything(), is.na)))
 # duas obs com NA
 ```
 
@@ -101,11 +101,11 @@ dados <- dados %>%
 dados %>%
   summarise(across(starts_with("via_"),
                    list(n = ~ sum(.x), ev = ~ sum(.x * vitima_grave_fatal))))
-
+View(dados)
 # A indicadora de obras/desvio tem 29 eventos, abaixo do limite prático adotado (30), mantida por relevância ao problema e monitorada no ajuste.
 ```
-Ignorados
 
+Ignorados
 ```{r}
 ## Questao do estado fisico ignorado pedido pelo professor -> talvez deveria ter sido feito logo no começo, pra ter os numeros das outras variaveis ja descartando os excluídos:
 
@@ -113,7 +113,7 @@ dados %>% count(vitima_grave_fatal, com_ignorado = ignorados > 0) # 537 nao fata
 ### Nova base: Sinistros sem vítima grave/fatal identificada, mas com pessoas de estado físico ignorado (n = 537), foram excluídos da análise principal, pois a resposta é indeterminada.
 dados_princ <- dados %>%
   filter(!(vitima_grave_fatal == 0 & ignorados > 0))
-nrow(dados_princ) # 3829 dados agora
+nrow(dados_princ) # 3.829 dados agora
 
 
 ## nas var categoricas:
@@ -122,22 +122,23 @@ dados %>% select(fase_dia, condicao_metereologica, tipo_pista, uso_solo, dia_sem
 
 dados %>% filter(condicao_metereologica == "Ignorado") %>% count(vitima_grave_fatal)
 
-### exclusao desses 52 por representarem poucos casos
-dados_princ <- dados %>%
+### exclusao desses 52 por representarem poucos casos (como vamos testar como preditor, ja excluímos desde já)
+dados <- dados %>%
   filter(!(vitima_grave_fatal == 0 & ignorados > 0),
          condicao_metereologica != "Ignorado")
-nrow(dados_princ) # 3785
-
+nrow(dados) # 3.785
 
 
 ## categorias de tipo de acidente com menos de 30 ocorrencias viram Outros; colisao traseira é a categoria com mais ocorrencias, entao sera usada como referencia pro modelo 
 dados <- dados %>%
   mutate(tipo_acidente_g = fct_lump_min(factor(tipo_acidente), min = 30, other_level = "Outros"),
          tipo_acidente_g = relevel(tipo_acidente_g, ref = "Colisão traseira"))
+nrow(dados) # 3.785
 ```
 
 
-## sugestão Claude: Não usar como preditores: mortos, feridos_graves, feridos e classificacao_acidente, que revelam a resposta; feridos_leves e ilesos também são componentes das mesmas contagens, é mais seguro excluí-los.
+## Não usar como preditores: mortos, feridos_graves, feridos e classificacao_acidente, que revelam a resposta; feridos_leves e ilesos também são componentes das mesmas contagens, é mais seguro excluí-los. (nota do professor: excluir dos preditores os campos referentes ao estado físico das pessoas e classificacao_acidente)
+
 
 # Análise Exploratória
 
@@ -154,7 +155,7 @@ tab_resp <- dados %>%
   count(vitima_grave_fatal) %>%
   mutate(prop = round(100 * n / sum(n), 1))
 tab_resp
-## 0: 80%, 1: 20%
+## 0: 77.2%, 1: 22.8%
 
 ggplot(dados, aes(factor(vitima_grave_fatal))) +
   geom_bar(fill = "steelblue") +
@@ -184,7 +185,7 @@ dados %>%
 # serve como indicativos de bons preditores
 
 wilcox.test(hora ~ vitima_grave_fatal, data = dados)
-# p-value = 0.1034
+# p-value = 0.2441
 
 wilcox.test(veiculos ~ vitima_grave_fatal, data = dados)
 # p-value < 2.2e-16
@@ -199,8 +200,9 @@ prop_cat <- function(var) {
     arrange(desc(prop))
 }
 
+# adicionando as novas variaveis agrupadas
 vars_cat <- c("fase_dia", "tipo_pista", "tracado_via", "condicao_metereologica",
-              "dia_semana", "tipo_acidente", "causa_acidente")
+              "dia_semana", "tipo_acidente", "causa_acidente", "tracado_grupo",                             "tipo_acidente_g")
 map(set_names(vars_cat), prop_cat)
 
 
@@ -216,7 +218,6 @@ prop_cat("tipo_pista") %>%
   labs(x = NULL, y = "Proporção com vítima grave/fatal")
 ## mais em pista simples
 
-#### Tá certo esse?
 prop_cat("tracado_via") %>%
   slice_max(prop, n = 20) %>%
   ggplot(aes(reorder(categoria, prop), prop)) +
@@ -256,6 +257,19 @@ prop_cat("causa_acidente") %>%
   labs(x = NULL, y = "Proporção com vítima grave/fatal")
 ## mais em suicidio presumido e participacao de racha
 
+prop_cat("tracado_grupo") %>%
+  ggplot(aes(reorder(categoria, prop), prop)) +
+  geom_col(fill = "steelblue") + coord_flip() +
+  labs(x = NULL, y = "Proporção com vítima grave/fatal")
+## mais em obras
+
+prop_cat("tipo_acidente_g") %>%
+  ggplot(aes(reorder(categoria, prop), prop)) +
+  geom_col(fill = "steelblue") + coord_flip() +
+  labs(x = NULL, y = "Proporção com vítima grave/fatal")
+## mais em atropelamento de pedestre
+
+
 
 # Resposta vs. variáveis contínuas (checar linearidade no logito)
 dados %>%
@@ -268,15 +282,15 @@ dados %>%
 
 # Correlação entre preditores quantitativos (multicolinearidade)
 cor(dados %>% select(hora, veiculos), use = "complete.obs")
-## ausência de multicolinearidade entre os preditores quantitativos
+## ausência de indício de multicolinearidade entre os preditores quantitativos
 ```
 
 #2a. Análise Exploratória
 ```{r}
 ## Continuação da análise exploratória: somente os 8 preditores candidatos do professor
-# nao incluindo veiculos ainda por ser quantitativa
+# nao incluindo veiculos ainda por ser quantitativa e usando as var agrupadas
 vars8 <- c("fase_dia", "condicao_metereologica", "tipo_pista", "tracado_grupo",
-           "uso_solo", "dia_semana", "tipo_acidente") 
+           "uso_solo", "dia_semana", "tipo_acidente_g") 
 
 # apoio pro grafico
 tab_prop <- function(var) {
@@ -321,15 +335,11 @@ dados %>%
 ```
 
 ```{r}
-## teste de associação individual para variáveis quantitativas
-# serve como indicativos de bons preditores
-wilcox.test(veiculos ~ vitima_grave_fatal, data = dados)
-# p-value < 2.2e-16
-
 ## teste de associação individual para variáveis qualitativas
 ## Revisar pq tem muitas variáveis com categorias muito pequenas
 map(set_names(vars8), ~ {
   tab <- table(dados[[.x]], dados$vitima_grave_fatal)
+
 
   cat("\nVariável:", .x, "\n")
   print(tab)
@@ -348,7 +358,7 @@ m0 <- glm(vitima_grave_fatal ~ 1, family = binomial, data = dados)
 # modelo completo
 modelo_completo <- glm(
   vitima_grave_fatal ~ veiculos + fase_dia + condicao_metereologica + tipo_pista + tracado_grupo+
-           uso_solo + dia_semana + tipo_acidente,
+           uso_solo + dia_semana + tipo_acidente_g,
   data = dados,
   family = binomial(link = "logit")
 )
@@ -376,5 +386,49 @@ anova(m_final, modelo_completo, test = "Chisq")  # p alto = não perdeu ajuste
 ##Interpretação: sob a hipótese nula, uma piora de ajuste de 32,19 com 21 parâmetros extras seria esperada por acaso em cerca de 5,6% das vezes. Em média, um qui-quadrado com 21 gl vale 21, então 32 é um pouco acima do esperado, mas não muito.
 ##O modelo reduzido não perde ajuste de forma significativa (a 5%), então ele é preferível: é mais simples e tem AIC menor.
 
+### rodei com os dados reduzidos: O teste da razão de verossimilhanças entre o modelo reduzido e o completo (diferença de deviance = 30,1; 20 gl; p = 0,068) não indicou piora significativa do ajuste a 5% ao remover condição meteorológica, tipo de pista, traçado da via e dia da semana. O modelo reduzido tem menor AIC. (mesma coisa, valores diferentes)
+
 AIC(m0, modelo_completo, m_final) # comparação dos AIC
+
+# o que o professor pede:
+## regressao logistica e especificar a distribuição, a função de ligação, o preditor linear e, quando necessário, a exposição. Justificar a escolha do modelo final e os critérios de comparação ou seleção utilizados. (falar das limitacoes do backward?)
+### distribuicao: bernoulli, funcao ligacao: logito, preditor linear: η_i = β0 + β1·veiculos_i + (efeitos de fase_dia) + (efeitos de uso_solo) + (efeitos de tipo_acidente_g), sem exposicao.
+### Justificativa: seleção backward com base no AIC, a partir do modelo com os oito preditores candidatos. O teste da razão de verossimilhanças não indicou piora significativa do ajuste a 5% ao remover condição meteorológica, tipo de pista, traçado da via e dia da semana (p = 0,068). O modelo reduzido, além de mais parcimonioso, apresentou menor AIC. Como a seleção usou os mesmos dados da estimação, os valores-p e intervalos de confiança do modelo final tendem a ser otimistas
+```
+
+## Backward por BIC
+```{r}
+m_bic <- step(modelo_completo, direction = "backward",
+              k = log(nobs(modelo_completo)))
+summary(m_bic)
+car::Anova(m_bic, type = "II")
+
+# comparar os três
+AIC(m0, modelo_completo, m_final, m_bic)
+BIC(m0, modelo_completo, m_final, m_bic) #bic prefere modelo com 16 parametros e nao 20 como o aic
+
+formula(m_bic) # remove fase_dia e uso_solo
+anova(m_bic, m_final, test = "Chisq") # fase do dia e uso do solo, juntos, melhoram o ajuste de forma significativa, então o BIC removeu variáveis que importam -> escolher backward por AIC
+```
+
+# Análise de Diagnóstico
+```{r}
+# modelo final: aic
+m_aic <- m_final
+
+#Multicolinearidade
+car::vif(m_aic)   # todos menores que o usual 2 -> sem multic
+
+# Resíduos (deviance) vs. valores ajustados, com suavização
+dados_final$res_dev <- residuals(m_aic, type = "deviance")
+dados_final$pred <- predict(m_aic, type = "response")
+
+ggplot(dados_final, aes(pred, res_dev)) +
+  geom_point(alpha = 0.3) +
+  geom_smooth(method = "loess", se = FALSE) +
+  labs(x = "Probabilidade ajustada", y = "Resíduo deviance")
+# resultado bom, mas verificar casos em que a prob foi quase certa em 0 e 1, devem ser excecoes
+
+# Pontos influentes por distancia de Cook - verificar
+plot(m_aic, which = 4)
 ```
