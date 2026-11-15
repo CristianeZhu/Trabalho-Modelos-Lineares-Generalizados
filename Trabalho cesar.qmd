@@ -37,7 +37,7 @@ colSums(is.na(dados))
 
 (df_faltantes <- dados %>% 
   filter(if_any(everything(), is.na)))
-# duas obs com NA
+# duas obs/linhas com todos os NA: não farao diferença se removidas porque não são do RJ
 ```
 
 ## Pré-processamento dos dados
@@ -53,6 +53,8 @@ dados <- dados %>%
   filter(uf == "RJ")
 nrow(dados)
 # NOVO TAMANHO: 4.366
+
+colSums(is.na(dados)) # sem NA nos dados do RJ
 
 # Variável Resposta: variável binária, definida como 1 quando feridos_graves > 0 ou mortos > 0 e 0 quando ambos são iguais a 0 
 # Para isso, é preciso criar uma nova variável binária que combine as duas colunas
@@ -107,7 +109,7 @@ View(dados)
 
 Ignorados
 ```{r}
-## Questao do estado fisico ignorado pedido pelo professor -> talvez deveria ter sido feito logo no começo, pra ter os numeros das outras variaveis ja descartando os excluídos:
+## Questao do estado fisico ignorado pedido pelo professor -> talvez deveria ter sido feito logo no começo, pra ter os numeros das outras variaveis (exploratória) ja descartando os excluídos:
 
 dados %>% count(vitima_grave_fatal, com_ignorado = ignorados > 0) # 537 nao fatais/graves ignorados
 ### Nova base: Sinistros sem vítima grave/fatal identificada, mas com pessoas de estado físico ignorado (n = 537), foram excluídos da análise principal, pois a resposta é indeterminada.
@@ -392,7 +394,7 @@ AIC(m0, modelo_completo, m_final) # comparação dos AIC
 
 # o que o professor pede:
 ## regressao logistica e especificar a distribuição, a função de ligação, o preditor linear e, quando necessário, a exposição. Justificar a escolha do modelo final e os critérios de comparação ou seleção utilizados. (falar das limitacoes do backward?)
-### distribuicao: bernoulli, funcao ligacao: logito, preditor linear: η_i = β0 + β1·veiculos_i + (efeitos de fase_dia) + (efeitos de uso_solo) + (efeitos de tipo_acidente_g), sem exposicao.
+### distribuicao: bernoulli, funcao ligacao: logito, preditor linear: η_i = β0 + β1·veiculos_i + (efeitos de fase_dia) + (efeitos de uso_solo) + (efeitos de tipo_acidente_g) = modelo reduzido (final), sem exposicao.
 ### Justificativa: seleção backward com base no AIC, a partir do modelo com os oito preditores candidatos. O teste da razão de verossimilhanças não indicou piora significativa do ajuste a 5% ao remover condição meteorológica, tipo de pista, traçado da via e dia da semana (p = 0,068). O modelo reduzido, além de mais parcimonioso, apresentou menor AIC. Como a seleção usou os mesmos dados da estimação, os valores-p e intervalos de confiança do modelo final tendem a ser otimistas
 ```
 
@@ -416,8 +418,8 @@ anova(m_bic, m_final, test = "Chisq") # fase do dia e uso do solo, juntos, melho
 # modelo final: aic
 m_aic <- m_final
 
-#Multicolinearidade
-car::vif(m_aic)   # todos menores que o usual 2 -> sem multic
+# Multicolinearidade
+car::vif(m_aic)   # todos menores que o usual 2 -> sem evidencia de multic
 
 # Resíduos (deviance) vs. valores ajustados, com suavização
 dados_final$res_dev <- residuals(m_aic, type = "deviance")
@@ -428,7 +430,16 @@ ggplot(dados_final, aes(pred, res_dev)) +
   geom_smooth(method = "loess", se = FALSE) +
   labs(x = "Probabilidade ajustada", y = "Resíduo deviance")
 # resultado bom, mas verificar casos em que a prob foi quase certa em 0 e 1, devem ser excecoes
+summary(m_aic)$coefficients %>% round(2) # caso com prob 0: incendio com valor estimado muito alto: nao tem vitimas fatais ou graves
+dados %>% filter(tipo_acidente == "Incêndio") %>%
+  count(vitima_grave_fatal, com_ignorado = ignorados > 0) # sem ignorados
+# a dúvida aqui é como prosseguir: agrupa incendios em outros, deixa como esta ou exclui? quais sao os impactos?
 
-# Pontos influentes por distancia de Cook - verificar
-plot(m_aic, which = 4)
+# Pontos influentes por distancia de Cook 
+plot(m_aic, which = 4) # 3 pontos se destacam
+dados_final %>% # pegando 5 maiores distancias
+  mutate(cook = cooks.distance(m_aic), h = hatvalues(m_aic)) %>%
+  slice_max(cook, n = 5) %>%
+  select(id, tipo_acidente_g, fase_dia, uso_solo, veiculos, vitima_grave_fatal, pred, cook, h)
+# quatro das cinco observações tem  sinistros com muitos veículos (5 a 11) e sem vítima grave ou fatal (o que não é esperado, veiculos é tratado com efeito linear no logito, quanto mais, mais provavel vitimas graves/fatais), principalmente engavetamentos, caso real de excecao que realmente envolve muitos carros e nao fere gravemente. o caso com 1 veiculo e resposta vitima grave/fatal tambem é possivel mas "incomum" pela relacao linear de veiculos (na realidade é comum em colisao com poste/suicidio, etc)
 ```
