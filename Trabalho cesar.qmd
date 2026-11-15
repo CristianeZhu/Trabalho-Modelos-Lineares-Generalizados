@@ -71,22 +71,13 @@ dados <- dados %>%
 
 
 Tratamentos
+
 ```{r}
 ## Tratamentos pendentes nas variaveis
 ### tracado_via tem muitas categorias: vou agrupar
 dados %>% count(tracado_via, sort = TRUE) %>% print(n = Inf)
 
-dados <- dados %>%
-  mutate(
-    via_curva   = as.integer(str_detect(tracado_via, "Curva")),
-    via_declive = as.integer(str_detect(tracado_via, "Declive")),
-    via_aclive  = as.integer(str_detect(tracado_via, "Aclive")),
-    via_inters  = as.integer(str_detect(tracado_via, "Interseção|Rotatória|Retorno")),
-    via_obras   = as.integer(str_detect(tracado_via, "Em Obras|Desvio")),
-    via_ponte   = as.integer(str_detect(tracado_via, "Ponte|Viaduto|Túnel"))
-  )
-
-## agrupando as categorias em uma coluna só
+## agrupando as categorias em uma coluna só (trancado_via)
 dados <- dados %>%
   mutate(
     tracado_grupo = case_when(
@@ -108,6 +99,7 @@ View(dados)
 ```
 
 Ignorados
+
 ```{r}
 ## Questao do estado fisico ignorado pedido pelo professor -> talvez deveria ter sido feito logo no começo, pra ter os numeros das outras variaveis (exploratória) ja descartando os excluídos:
 
@@ -349,35 +341,133 @@ map(set_names(vars8), ~ {
 })
 ```
 
-## Teste de modelos
-```{r}
-## testar varios conjuntos de preditores...
-##começar com o modelo completo e ir tirando preditores? (backward)
 
-#modelo nulo
+# Modelagem
+
+- Distribuição: distribuição de bernoulli
+- Função ligação: logito
+- Preditor linear: η_i = β0 + β1·veiculos_i + (efeitos de fase_dia) + (efeitos de uso_solo) + (efeitos de tipo_acidente_g) = modelo reduzido (final), sem exposicao.
+
+- Critério de seleção das variáveis para encontrar um bom ajuste:
+Os métodos estudados em sala foram todas reg possíveis, forward, backward, stepwise
+
+     - Todas as regressões possíveis: método inviável até para um número moderado de variáveis, pois é necessário gerar todas as combinações, no nosso caso são 8 variáveis, teriamos que ajustar 2^8= 256 modelos
+     
+     - Forward: começa pelo modelo nulo e vai selecionando variável q proporciona maior de ajuste 
+     
+     - Backward: começa pelo modelo mais complexo e vai excluindo o termo com menor contribuição p ajuste. Bom ponto de partida se tivermos um conjunto máximo plausivel. A limitação do método é requer que o modelo completo seja estimável (problema se p é grande ou há colinearidade); pode remover variáveis úteis cedo; pode ter custo elevado quando o modelo completo contém muitos termos.
+
+     - Stepwise:combinação do forward com backward
+
+Método utilizado:backward, pois já tinhamos selecionados preditoras candidatas com base no contexto do problema e com justificativa plausível (conjunto máximo plausível). Verificando a limitação
+
+```{r}
+modelo_completo$converged    # TRUE = convergiu, ent o modelo completo é estimável
+modelo_completo$iter # 15 iterações
+```
+
+
+- Como avaliar os diferentes modelos feitos? critério de informação:
+AIC, BIC
+
+## Modelo nulo e completo
+```{r}
+#### vou testar todos os métodos a critérios de avaliação (to vendo os scripts do prof e usando como base)
+
+# modelo nulo
 m0 <- glm(vitima_grave_fatal ~ 1, family = binomial, data = dados)
 
+summary(m0)
 # modelo completo
 modelo_completo <- glm(
-  vitima_grave_fatal ~ veiculos + fase_dia + condicao_metereologica + tipo_pista + tracado_grupo+
-           uso_solo + dia_semana + tipo_acidente_g,
+  vitima_grave_fatal ~ veiculos + fase_dia + condicao_metereologica + tipo_pista + tracado_grupo+uso_solo + dia_semana + tipo_acidente_g,
   data = dados,
   family = binomial(link = "logit")
 )
 summary(modelo_completo)
 
-# ver quais var importam
-car::Anova(modelo_completo, type = "II")
 
 
-## método backward (ir retirando variáveis com base no AIC)
-## vai tirando uma variável de cada vez e calcula o AIC
-m_step <- step(modelo_completo, direction = "backward")
-summary(m_step)
+# o que o professor pede:
+## regressao logistica e especificar a distribuição, a função de ligação, o preditor linear e, quando necessário, a exposição. Justificar a escolha do modelo final e os critérios de comparação ou seleção utilizados. (falar das limitacoes do backward?)
+### distribuicao: bernoulli, funcao ligacao: logito, preditor linear: η_i = β0 + β1·veiculos_i + (efeitos de fase_dia) + (efeitos de uso_solo) + (efeitos de tipo_acidente_g) = modelo reduzido (final), sem exposicao.
 
-car::Anova(m_step, type = "II") #teste por variável ao invés de um por dummy igual no summary
-## todos significativos
+### Justificativa: seleção backward com base no AIC, a partir do modelo com os oito preditores candidatos. O teste da razão de verossimilhanças não indicou piora significativa do ajuste a 5% ao remover condição meteorológica, tipo de pista, traçado da via e dia da semana (p = 0,068). O modelo reduzido, além de mais parcimonioso, apresentou menor AIC. Como a seleção usou os mesmos dados da estimação, os valores-p e intervalos de confiança do modelo final tendem a ser otimistas
+```
 
+## Backward - AIC 
+```{r}
+m_back_aic <- step(modelo_completo, direction = "backward")
+summary(m_back_aic)
+```
+
+## Backward - BIC
+```{r}
+m_back_bic <- step(modelo_completo, direction = "backward",
+              k = log(nobs(modelo_completo)))
+summary(m_bic)
+```
+
+## Forward - AIC 
+```{r}
+m_for_aic <- step(modelo_completo, direction = "forward")
+summary(m_for_aic)
+```
+
+## Forward - BIC
+```{r}
+m_for_bic <- step(modelo_completo, direction = "forward", k= log(nobs(modelo_completo)))
+summary(m_for_bic)
+```
+
+## Stepwise - AIC
+```{r}
+m_step_aic <- step(modelo_completo,scope= formula(modelo_completo), direction = "both", trace = 0)
+summary(m_for_bic)
+```
+
+
+## Stepwise -BIC
+```{r}
+m_step_bic <- step(modelo_completo,scope= formula(modelo_completo), direction = "both", k= log(nobs(modelo_completo)), trace = 0)
+summary(m_for_bic)
+```
+
+## Comparação
+```{r}
+comparar <- function(mods, criterio = c("AIC", "BIC")) {
+  criterio <- match.arg(criterio)
+  f <- if (criterio == "AIC") AIC else BIC
+
+  tab <- data.frame(
+    metodo  = names(mods),
+    gl      = sapply(mods, function(m) length(coef(m))),
+    crit    = sapply(mods, f),
+    formula = sapply(mods, function(m)
+      paste(sort(attr(terms(m), "term.labels")), collapse = " + "))
+  )
+  tab$delta <- tab$crit - min(tab$crit)
+  names(tab)[3] <- criterio          # a coluna passa a se chamar AIC ou BIC
+  rownames(tab) <- NULL
+  tab
+}
+
+comparar(mods_aic, "AIC")   # só a coluna AIC
+comparar(mods_bic, "BIC")   # só a coluna BIC
+
+## pior método: forward, step e backward ficaram iguais
+```
+
+```{r}
+AIC(m0, modelo_completo, m_back_aic, m_back_bic, m_for_aic, m_for_bic, m_step_aic,m_step_bic)
+BIC(m0, modelo_completo, m_back_aic, m_back_bic, m_for_aic, m_for_bic, m_step_aic,m_step_bic)
+
+formula(m_back_bic) # remove fase_dia e uso_solo
+anova(m_bic, m_final, test = "Chisq") # fase do dia e uso do solo, juntos, melhoram o ajuste de forma significativa, então o BIC removeu variáveis que importam -> escolher backward por AIC
+```
+
+## Modelo final
+```{r}
 m_final <- step(modelo_completo, direction = "backward", trace = 0)
 summary(m_final)
 car::Anova(m_final, type = "II")
@@ -390,28 +480,9 @@ anova(m_final, modelo_completo, test = "Chisq")  # p alto = não perdeu ajuste
 
 ### rodei com os dados reduzidos: O teste da razão de verossimilhanças entre o modelo reduzido e o completo (diferença de deviance = 30,1; 20 gl; p = 0,068) não indicou piora significativa do ajuste a 5% ao remover condição meteorológica, tipo de pista, traçado da via e dia da semana. O modelo reduzido tem menor AIC. (mesma coisa, valores diferentes)
 
-AIC(m0, modelo_completo, m_final) # comparação dos AIC
-
-# o que o professor pede:
-## regressao logistica e especificar a distribuição, a função de ligação, o preditor linear e, quando necessário, a exposição. Justificar a escolha do modelo final e os critérios de comparação ou seleção utilizados. (falar das limitacoes do backward?)
-### distribuicao: bernoulli, funcao ligacao: logito, preditor linear: η_i = β0 + β1·veiculos_i + (efeitos de fase_dia) + (efeitos de uso_solo) + (efeitos de tipo_acidente_g) = modelo reduzido (final), sem exposicao.
-### Justificativa: seleção backward com base no AIC, a partir do modelo com os oito preditores candidatos. O teste da razão de verossimilhanças não indicou piora significativa do ajuste a 5% ao remover condição meteorológica, tipo de pista, traçado da via e dia da semana (p = 0,068). O modelo reduzido, além de mais parcimonioso, apresentou menor AIC. Como a seleção usou os mesmos dados da estimação, os valores-p e intervalos de confiança do modelo final tendem a ser otimistas
 ```
 
-## Backward por BIC
-```{r}
-m_bic <- step(modelo_completo, direction = "backward",
-              k = log(nobs(modelo_completo)))
-summary(m_bic)
-car::Anova(m_bic, type = "II")
-
-# comparar os três
-AIC(m0, modelo_completo, m_final, m_bic)
-BIC(m0, modelo_completo, m_final, m_bic) #bic prefere modelo com 16 parametros e nao 20 como o aic
-
-formula(m_bic) # remove fase_dia e uso_solo
-anova(m_bic, m_final, test = "Chisq") # fase do dia e uso do solo, juntos, melhoram o ajuste de forma significativa, então o BIC removeu variáveis que importam -> escolher backward por AIC
-```
+## Prof mostrou metodos de regularização p escolher variavel tbm, será q testamos? 
 
 # Análise de Diagnóstico
 ```{r}
@@ -443,3 +514,86 @@ dados_final %>% # pegando 5 maiores distancias
   select(id, tipo_acidente_g, fase_dia, uso_solo, veiculos, vitima_grave_fatal, pred, cook, h)
 # quatro das cinco observações tem  sinistros com muitos veículos (5 a 11) e sem vítima grave ou fatal (o que não é esperado, veiculos é tratado com efeito linear no logito, quanto mais, mais provavel vitimas graves/fatais), principalmente engavetamentos, caso real de excecao que realmente envolve muitos carros e nao fere gravemente. o caso com 1 veiculo e resposta vitima grave/fatal tambem é possivel mas "incomum" pela relacao linear de veiculos (na realidade é comum em colisao com poste/suicidio, etc)
 ```
+
+
+```{r}
+library(broom)
+library(dplyr)
+library(ggplot2)
+
+or_tab <- tidy(m_bic, exponentiate = TRUE, conf.int = TRUE) |>
+  filter(term != "(Intercept)")
+
+ggplot(or_tab, aes(x = estimate, y = reorder(term, estimate))) +
+  geom_vline(xintercept = 1, linetype = "dashed") +
+  geom_pointrange(aes(xmin = conf.low, xmax = conf.high)) +
+  scale_x_log10() +
+  labs(x = "Razão de chances (escala log, IC 95%)", y = NULL) +
+  theme_minimal()
+```
+
+# Resultados
+```{r}
+car::Anova(m_aic, type = "II")                  # LRT por variável (fator inteiro)
+anova(m0, m_aic, test = "Chisq")                # modelo final contra o nulo
+### Todas variáveis significativas
+
+# Estimativas e intervalors de confiança
+library(broom); library(dplyr)
+
+tab_or <- tidy(m_aic, exponentiate = TRUE, conf.int = TRUE) |>
+  filter(term != "(Intercept)") |>
+  transmute(termo = term,
+            OR = round(estimate, 2),
+            IC_inf = round(conf.low, 2),
+            IC_sup = round(conf.high, 2),
+            p = signif(p.value, 2))
+tab_or
+### Problema no acidente por incendio
+
+
+## OR: razão entre as chances
+##Interpretações:
+# veiculos: a cada veiculo adicional, a chance de vitima grave aumenta 1,45 vezes
+#fase do dia: amanhecer é a referencia, a chance de vitma fatal em plena noite é 1,18vezes a de referencia
+### Tipo de acidente, atropelamento de pessoa é 5vezes maior a de ref
+
+
+# ex predição
+levels(dados$fase_dia); levels(dados$uso_solo); levels(dados$tipo_acidente_g)
+
+novo <- data.frame(
+  veiculos        = 2,
+  fase_dia        = "Pleno dia",
+  uso_solo        = "Sim",
+  tipo_acidente_g = "Engavetamento"
+)
+
+# probabilidade com IC 95% (IC feito no logito e depois transformado)
+pr <- predict(m_aic, newdata = novo, type = "link", se.fit = TRUE)
+data.frame(
+  prob = plogis(pr$fit),
+  inf  = plogis(pr$fit - 1.96 * pr$se.fit),
+  sup  = plogis(pr$fit + 1.96 * pr$se.fit)
+)
+```
+
+### Grafico probs esperadas com intervalo de confiança
+```{r}
+
+library(ggeffects); library(ggplot2)
+
+# (a) Probabilidade por tipo de acidente, ajustada pelas demais variáveis
+p1 <- ggpredict(m_aic, terms = "tipo_acidente_g")
+plot(p1) +
+  labs(x = NULL, y = "Probabilidade de vítima grave/fatal",
+       title = NULL) +
+  coord_flip()
+
+# (b) Probabilidade segundo o número de veículos, por fase do dia
+p2 <- ggpredict(m_aic, terms = c("veiculos [1:8]", "fase_dia"))
+plot(p2) +
+  labs(x = "Número de veículos", y = "Probabilidade de vítima grave/fatal",
+       colour = "Fase do dia")
+```
+
