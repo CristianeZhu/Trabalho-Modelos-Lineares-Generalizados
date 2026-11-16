@@ -493,10 +493,10 @@ m_aic <- m_final
 car::vif(m_aic)   # todos menores que o usual 2 -> sem evidencia de multic
 
 # Resíduos (deviance) vs. valores ajustados, com suavização
-dados_final$res_dev <- residuals(m_aic, type = "deviance")
-dados_final$pred <- predict(m_aic, type = "response")
+dados$res_dev <- residuals(m_aic, type = "deviance")
+dados$pred <- predict(m_aic, type = "response")
 
-ggplot(dados_final, aes(pred, res_dev)) +
+ggplot(dados, aes(pred, res_dev)) +
   geom_point(alpha = 0.3) +
   geom_smooth(method = "loess", se = FALSE) +
   labs(x = "Probabilidade ajustada", y = "Resíduo deviance")
