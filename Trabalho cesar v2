@@ -1,0 +1,580 @@
+---
+title: "Modelagem em dados da PRF"
+author: "Cristiane Huang Zhu e Júlia Zorzo Ferreira"
+format: html
+editor: visual
+---
+
+Pacotes
+```{r}
+#install.packages("tidyverse")
+library(tidyverse)
+library(readr)
+library(broom)
+library(ggeffects)
+library(logistf)
+```
+
+Tema/objetivo: Quais características estão associadas à presença de vítimas graves ou fatais nos sinistros do Rio de Janeiro?
+
+# Dados
+## Pré-processamento
+Chamada do dataset 
+```{r}
+# Fonte: https://www.gov.br/prf/pt-br/acesso-a-informacao/dados-abertos/dadosabertos-da-prf
+# Data da extração: 29/10/2026
+# Última modificação do site em 28/07/2026 15:45
+# Período efetivamente coberto pelos dados: 01/01/2026 a 31/08/2026
+
+
+dados <-  read_delim("datatran2026.csv", 
+    delim = ";", escape_double = FALSE, trim_ws = TRUE, locale = locale(encoding = "ISO-8859-1" ))
+# TAMANHO: 48.712 observações e 30 colunas
+# UNIDADE: sinistro
+```
+
+Filtro do estado RJ
+```{r}
+dados <- dados %>%
+  filter(uf == "RJ")
+nrow(dados)
+# NOVO TAMANHO: 4.366
+```
+
+Verificar valores ausentes
+```{r}
+colSums(is.na(dados)) # sem valores ausentes
+```
+
+Transformação das variáveis para a variável resposta binária
+```{r}
+# Variável Resposta: variável binária, definida como 1 quando feridos_graves > 0 ou mortos > 0 e 0 quando ambos são iguais a 0 
+# Para isso, é preciso criar uma nova variável binária que combine as duas colunas
+dados <- dados %>%
+  mutate(
+    vitima_grave_fatal = if_else(
+      feridos_graves > 0 | mortos > 0,
+      1,
+      0
+    )
+  )
+```
+
+Classe dos dados
+```{r}
+glimpse(dados)
+(classe <- str(dados))
+# 1 coluna de data
+# 1 coluna de tempo
+# 11 colunas número
+# 17 colunas de caracteres
+```
+
+
+## Tratamentos
+### Variável tracado_grupo
+Agrupamento de tracado_via: muitas categorias
+```{r}
+dados %>% count(tracado_via, sort = TRUE) %>% print(n = Inf)
+
+# agrupando as categorias em uma coluna só (tracado_grupo)
+dados <- dados %>%
+  mutate(
+    tracado_grupo = case_when(
+      str_detect(tracado_via, "Interseção|Rotatória|Retorno") ~ "Interseção",
+      str_detect(tracado_via, "Em Obras|Desvio")              ~ "Obras",
+      str_detect(tracado_via, "Ponte|Viaduto|Túnel")          ~ "Ponte/Viaduto/Túnel",
+      str_detect(tracado_via, "Curva")                        ~ "Curva",
+      str_detect(tracado_via, "Declive")                      ~ "Declive",
+      str_detect(tracado_via, "Aclive")                       ~ "Aclive",
+      TRUE                                                    ~ "Reta/Outros"
+    ),
+    tracado_grupo = relevel(factor(tracado_grupo), ref = "Reta/Outros") # categoria com maior numero de ocorrencias se torna a referencia
+  )
+
+dados %>%
+  summarise(across(starts_with("via_"),
+                   list(n = ~ sum(.x), ev = ~ sum(.x * vitima_grave_fatal))))
+View(dados)
+# A indicadora de obras/desvio tem 29 eventos, abaixo do limite adotado (30)...
+```
+
+### Ignorados
+```{r}
+## Questao do estado fisico ignorado pedido pelo professor
+
+dados %>% count(vitima_grave_fatal, com_ignorado = ignorados > 0) # 537 nao fatais/graves ignorados
+
+## Nova base: Sinistros sem vítima grave/fatal identificada, mas com pessoas de estado físico ignorado (n = 537), foram excluídos da análise principal, pois a resposta é indeterminada.
+dados_princ <- dados %>%
+  filter(!(vitima_grave_fatal == 0 & ignorados > 0))
+nrow(dados_princ) # 3.829 dados agora
+
+
+## ignorados nas var categoricas:
+dados %>% select(fase_dia, condicao_metereologica, tipo_pista, uso_solo, dia_semana, tipo_acidente) %>%
+  summarise(across(everything(), ~ sum(.x == "Ignorado", na.rm = TRUE))) # 52 em condicao metereologica
+
+dados %>% filter(condicao_metereologica == "Ignorado") %>% count(vitima_grave_fatal)
+### exclusao desses 52 por representarem poucos casos (como vamos testar como preditor, ja excluímos desde já)
+
+## Base final sobrescrita sem ignorados
+dados <- dados %>%
+  filter(!(vitima_grave_fatal == 0 & ignorados > 0),
+         condicao_metereologica != "Ignorado")
+nrow(dados) # 3.785
+```
+
+### Variável tipo_acidente_g
+```{r}
+## Categorias de tipo de acidente com menos de 30 ocorrências viram "Outros".
+## Em todos os fatores, a referência é a categoria mais frequente.
+dados <- dados %>%
+  mutate(
+    tipo_acidente_g = fct_lump_min(factor(tipo_acidente), min = 30, other_level = "Outros"),
+    tipo_acidente_g = fct_infreq(tipo_acidente_g),
+    fase_dia               = fct_infreq(factor(fase_dia)),
+    uso_solo               = fct_infreq(factor(uso_solo)),
+    condicao_metereologica = fct_infreq(factor(condicao_metereologica)),
+    tipo_pista             = fct_infreq(factor(tipo_pista)),
+    dia_semana             = fct_infreq(factor(dia_semana))
+  )
+# tracado_grupo já tem "Reta/Outros" como referência (definida anteriormente em tracado_grupo)
+
+# conferir a referência (primeiro nível) de cada fator
+sapply(dados[c("tipo_acidente_g", "fase_dia", "uso_solo", "condicao_metereologica",
+               "tipo_pista", "dia_semana", "tracado_grupo")],
+       function(x) levels(x)[1])
+```
+
+
+
+
+# Análise Exploratória
+## Variável Resposta
+```{r}
+# Proporção de 0 e 1 da var. resposta
+tab_resp <- dados %>%
+  count(vitima_grave_fatal) %>%
+  mutate(prop = round(100 * n / sum(n), 1))
+tab_resp
+## 0: 77.2%, 1: 22.8%
+
+ggplot(dados, aes(factor(vitima_grave_fatal))) +
+  geom_bar(fill = "steelblue") +
+  labs(x = "Vítima grave/fatal (0 = não, 1 = sim)", y = "Sinistros")
+
+```
+
+## Preditores
+Preditores candidatos: fase do dia, condição meteorológica, tipo de pista,
+traçado da via, uso do solo, dia da semana, tipo de sinistro, número de veículos envolvidos 
+! Não usar como preditores: mortos, feridos_graves, feridos e classificacao_acidente, que revelam a resposta; feridos_leves e ilesos também são componentes das mesmas contagens, é mais seguro excluí-los. (nota do professor: excluir dos preditores os campos referentes ao estado físico das pessoas e classificacao_acidente)
+
+### Quantitativa: veículos
+```{r}
+# Número de veículos (quantitativa)
+summary(dados$veiculos)
+wilcox.test(veiculos ~ vitima_grave_fatal, data = dados)
+
+dados %>%
+  mutate(veic = factor(if_else(veiculos >= 4, "4+", as.character(veiculos)))) %>%
+  group_by(veic) %>%
+  summarise(n = n(), eventos = sum(vitima_grave_fatal),
+            prop = round(eventos / n, 3), .groups = "drop") %>%
+  ggplot(aes(veic, prop)) +
+  geom_col(fill = "steelblue") +
+  geom_text(aes(label = paste0("n=", n)), vjust = -0.3, size = 3) +
+  labs(x = "Veículos envolvidos (4+ agrupado)",
+       y = "Proporção com vítima grave/fatal")
+
+## teste de associação individual para variáveis quantitativas
+# serve como indicativos de bons preditores
+wilcox.test(veiculos ~ vitima_grave_fatal, data = dados)
+# p-value < 2.2e-16
+```
+
+### Qualitativas: restante
+```{r}
+## preditores candidatos (exceto veículos - numérica)
+vars8 <- c("fase_dia", "condicao_metereologica", "tipo_pista", "tracado_grupo",
+           "uso_solo", "dia_semana", "tipo_acidente_g")
+
+# Categóricas: tabela única (n, eventos e proporção por categoria)
+tab_cat <- map_dfr(vars8, ~ dados %>%
+  group_by(categoria = as.character(.data[[.x]])) %>%
+  summarise(n = n(), eventos = sum(vitima_grave_fatal),
+            prop = round(eventos / n, 3), .groups = "drop") %>%
+  mutate(variavel = .x))
+
+tab_cat %>% arrange(variavel, desc(prop)) %>% print(n = Inf) 
+# incêndio com classificação 0 nos 101 casos -> problema de separação
+
+## maioria da resposta = 1:
+# tipo_pista: pista simples
+# uso_solo: não
+# fase_dia: plena noite
+# tracado_grupo: obras
+# condicao_metereologica: sol
+# dia_semana: domingo (ta certo?)
+# causa_acidente: suicidio presumido e participacao de racha
+prop_cat("tipo_acidente_g") %>%
+  ggplot(aes(reorder(categoria, prop), prop)) +
+  geom_col(fill = "steelblue") + coord_flip() +
+  labs(x = NULL, y = "Proporção com vítima grave/fatal")
+## mais em atropelamento de pedestre (para onde foi sinistro pessoal?)
+# bom candidato
+
+
+# Gráfico único, um painel por variável (categorias com n >= 30)
+tab_cat %>%
+  filter(n >= 30) %>%
+  mutate(categoria = fct_reorder(categoria, prop)) %>%
+  ggplot(aes(categoria, prop)) +
+  geom_col(fill = "steelblue") +
+  geom_text(aes(label = paste0("n=", n)), hjust = -0.1, size = 2.5) +
+  coord_flip() +
+  facet_wrap(~ variavel, scales = "free", ncol = 2) +
+  scale_y_continuous(expand = expansion(mult = c(0, 0.2))) +
+  labs(x = NULL, y = "Proporção com vítima grave/fatal")  # verificar se fazemos gráficos separados pros slides
+```
+
+# Modelagem
+- Distribuição: distribuição de bernoulli
+- Função ligação: logito
+- Preditor linear: η_i = β0 + β1·veiculos_i + (efeitos de fase_dia) + (efeitos de uso_solo) + (efeitos de tipo_acidente_g) = modelo reduzido (final), sem exposicao.
+
+- Critério de seleção das variáveis para encontrar um bom ajuste:
+Os métodos estudados em sala foram todas reg possíveis, forward, backward, stepwise
+
+     - Todas as regressões possíveis: método inviável até para um número moderado de variáveis, pois é necessário gerar todas as combinações, no nosso caso são 8 variáveis, teriamos que ajustar 2^8= 256 modelos
+     
+     - Forward: começa pelo modelo nulo e vai selecionando variável q proporciona maior de ajuste 
+     
+     - Backward: começa pelo modelo mais complexo e vai excluindo o termo com menor contribuição p ajuste. Bom ponto de partida se tivermos um conjunto máximo plausivel. A limitação do método é requer que o modelo completo seja estimável (problema se p é grande ou há colinearidade); pode remover variáveis úteis cedo; pode ter custo elevado quando o modelo completo contém muitos termos.
+
+     - Stepwise:combinação do forward com backward
+
+Método utilizado:backward, pois já tinhamos selecionados preditoras candidatas com base no contexto do problema e com justificativa plausível (conjunto máximo plausível). Verificando a limitação
+
+## Problema de separação
+```{r}
+### Avaliando tipo_acidente = incendio: problema de separacao
+#### níveis com 0 eventos ou só eventos, em cada preditor categórico
+map_dfr(vars8, ~ tab_prop(.x) %>% mutate(variavel = .x)) %>%
+  filter(eventos == 0 | eventos == n) %>%
+  select(variavel, categoria, n, eventos) # somente incendio
+
+## Verificar erro padrão (slides falam que extrapola)
+m_sep <- glm(vitima_grave_fatal ~ tipo_acidente_g, family = binomial, data = dados)
+summary(m_sep)$coefficients %>% round(2)   # Incêndio: coeficiente ~ -14 e EP ~ 200+ -> extrapolou
+
+(dados %>% filter(tipo_acidente_g == "Outros") %>% count(vitima_grave_fatal))
+
+## Possibilidades de acordo com os slides: 
+# - regressão logística penalizada (ex: método ridge); 
+# - estimação Bayesiana, especificando distribuições a priori (fracamente) informativas para os parâmetros do modelo; 
+# - Regressão logística com correção de viés de Firth; 
+# - Agrupar categorias de preditores para evitar separação; 
+# - Coletar mais dados para cobrir combinações de preditores e respostas (essa última não aplicável, nem a ridge, pois nao resulta em IC nem p-valor, exigidas pelo professor, nem a bayesiana).
+# -- excluir incendio nao esta nos slides, mas talvez poderia ser uma opcao por haver "apenas" 101 dados 
+
+# Resta agrupar ou usar Firth
+## 1: agrupar em "outros"
+(dados %>% filter(tipo_acidente_g == "Outros") %>% count(vitima_grave_fatal))
+### melhor não usar pois tem poucos resultados, ia tendenciar muito a estimativa
+```
+
+##Modelos
+2: Regressão logística com correção de viés de Firth (essa correção é um penalizador aplicado no modelo)
+Primeiro escolhe o modelo, depois aplica a correção
+Primeiro entao vemos o melhor glm:
+
+o que o professor pede:
+regressao logistica e especificar a distribuição, a função de ligação, o preditor linear e, quando necessário, a exposição. Justificar a escolha do modelo final e os critérios de comparação ou seleção utilizados. (falar das limitacoes do backward?)
+distribuicao: bernoulli, funcao ligacao: logito, preditor linear: η_i = β0 + β1·veiculos_i + (efeitos de fase_dia) + (efeitos de uso_solo) + (efeitos de tipo_acidente_g) = modelo reduzido (final), sem exposicao.
+
+
+
+### Modelo nulo
+```{r}
+m0 <- glm(vitima_grave_fatal ~ 1, family = binomial, data = dados)
+```
+
+
+### Modelo completo
+```{r}
+modelo_completo <- glm(
+  vitima_grave_fatal ~ veiculos + fase_dia + condicao_metereologica + tipo_pista +
+    tracado_grupo + uso_solo + dia_semana + tipo_acidente_g,
+  family = binomial, data = dados)
+
+modelo_completo$converged    # TRUE = convergiu, ent o modelo completo é estimável
+modelo_completo$iter # 15 iterações
+```
+
+
+
+## Backward - AIC 
+```{r}
+m_back_aic <- step(modelo_completo, direction = "backward")
+summary(m_back_aic) # incendio explodindo
+formula(m_aic) # modelo final: vitima_grave_fatal ~ veiculos + fase_dia + uso_solo + tipo_acidente_g
+```
+
+## Backward - BIC
+```{r}
+m_back_bic <- step(modelo_completo, direction = "backward",
+              k = log(nobs(modelo_completo)))
+summary(m_bic)
+```
+
+## Forward - AIC 
+```{r}
+m_for_aic <- step(modelo_completo, direction = "forward")
+summary(m_for_aic)
+```
+
+## Forward - BIC
+```{r}
+m_for_bic <- step(modelo_completo, direction = "forward", k= log(nobs(modelo_completo)))
+summary(m_for_bic)
+```
+
+## Stepwise - AIC
+```{r}
+m_step_aic <- step(modelo_completo,scope= formula(modelo_completo), direction = "both", trace = 0)
+summary(m_for_bic)
+```
+
+
+## Stepwise -BIC
+```{r}
+m_step_bic <- step(modelo_completo,scope= formula(modelo_completo), direction = "both", k= log(nobs(modelo_completo)), trace = 0)
+summary(m_for_bic)
+```
+
+## Comparação
+```{r}
+comparar <- function(mods, criterio = c("AIC", "BIC")) {
+  criterio <- match.arg(criterio)
+  f <- if (criterio == "AIC") AIC else BIC
+
+  tab <- data.frame(
+    metodo  = names(mods),
+    gl      = sapply(mods, function(m) length(coef(m))),
+    crit    = sapply(mods, f),
+    formula = sapply(mods, function(m)
+      paste(sort(attr(terms(m), "term.labels")), collapse = " + "))
+  )
+  tab$delta <- tab$crit - min(tab$crit)
+  names(tab)[3] <- criterio          # a coluna passa a se chamar AIC ou BIC
+  rownames(tab) <- NULL
+  tab
+}
+
+# Todos os modelos
+mods_aic <- list(
+  Backward = m_back_aic,
+  Forward  = m_for_aic,
+  Stepwise = m_step_aic
+)
+
+mods_bic <- list(
+  Backward = m_back_bic,
+  Forward  = m_for_bic,
+  Stepwise = m_step_bic
+)
+
+
+comparar(mods_aic, "AIC")   # só a coluna AIC
+comparar(mods_bic, "BIC")   # só a coluna BIC
+
+## pior método: forward; step e backward ficaram iguais no aic e bic porque o stepwise partiu do modelo completo, então no começo só podia remover variáveis, igual ao backward. Nenhuma das removidas voltou a melhorar o critério, então os dois percorreram o mesmo caminho e pararam no mesmo modelo final.
+```
+
+```{r}
+AIC(m0, modelo_completo, m_back_aic, m_back_bic, m_for_aic, m_for_bic, m_step_aic,m_step_bic)
+BIC(m0, modelo_completo, m_back_aic, m_back_bic, m_for_aic, m_for_bic, m_step_aic,m_step_bic)
+
+#avaliando o uso do bic
+formula(m_back_bic) # remove fase_dia e uso_solo
+anova(m_bic, m_final, test = "Chisq") # fase do dia e uso do solo, juntos, melhoram o ajuste de forma significativa, então o BIC removeu variáveis que importam -> escolher backward por AIC
+```
+
+## Modelo final
+```{r}
+m_final <- step(modelo_completo, direction = "backward", trace = 0)
+summary(m_final)
+car::Anova(m_final, type = "II")
+
+## comparando o modelo escolhido com o modelo nulo e o completo
+anova(m_final, modelo_completo, test = "Chisq")  # p alto = não perdeu ajuste
+
+##Interpretação: O teste da razão de verossimilhanças entre o modelo reduzido e o completo (diferença de deviance = 30,1; 20 gl; p = 0,068) não indicou piora significativa do ajuste a 5% ao remover condição meteorológica, tipo de pista, traçado da via e dia da semana, embora o p esteja próximo do limite. O modelo reduzido (o final escolhido como backward aic) é mais parcimonioso e tem menor AIC. 
+
+```
+Justificativa: seleção backward com base no AIC, a partir do modelo com os oito preditores candidatos. O teste da razão de verossimilhanças não indicou piora significativa do ajuste a 5% ao remover condição meteorológica, tipo de pista, traçado da via e dia da semana (p = 0,068). O modelo reduzido, além de mais parcimonioso, apresentou menor AIC. Como a seleção usou os mesmos dados da estimação, os valores-p e intervalos de confiança do modelo final tendem a ser otimistas
+
+### Correção de Firth - separação
+```{r}
+## Agora com a correção, em cima desse modelo:
+m_firth <- logistf(formula(m_final), data = dados)
+summary(m_firth)
+
+# comparação: glm vs glm (backward com aic) + correção de Firth
+mod_glm <- exp(coef(m_final))
+fir <- exp(m_firth$coefficients)
+data.frame(termo = names(mod_glm), glm = round(mod_glm, 2), firth = round(fir, 2)) # Firth corrige o nível com separação e deixa o resto do modelo praticamente como o glm
+```
+
+
+## Prof mostrou metodos de regularização p escolher variavel tbm, será q testamos? 
+Vamos precisar por conta do problema de separação, mas fazer outros?
+
+
+# Análise de Diagnóstico
+O modelo final é o backward pelo aic com a correção. O logistf não tem as ferramentas prontas do glm, entao calculamos a mao (ou ainda daria pra ajustar pelo glm mesmo, porque tem numeros parecidos)
+
+## Multicolinearidade
+```{r}
+# Multicolinearidade (nao depende da resposta, nao importa se o modelo tem a correcao ou nao)
+car::vif(m_final)   # avaliada pelo GVIF ajustado (GVIF^(1/(2·gl))). Valores ficaram entre 1,01 e 1,47, abaixo do limite usual de 2, sem indício de multicolinearidade entre os preditores do modelo final.
+```
+
+## Resíduos deviance
+```{r}
+# Matriz do modelo (mesmas colunas dos coeficientes do Firth)
+X <- model.matrix(formula(m_aic), data = dados)
+stopifnot(all.equal(colnames(X), names(m_firth$coefficients)))
+
+b <- m_firth$coefficients
+V <- m_firth$var                      # covariância das estimativas penalizadas
+eta <- as.numeric(X %*% b)
+dados$pred_f <- plogis(eta)           # probabilidade ajustada (Firth)
+y <- dados$vitima_grave_fatal
+
+# Resíduos deviance e Pearson
+dados$res_dev_f <- sign(y - dados$pred_f) *
+  sqrt(-2 * (y * log(dados$pred_f) + (1 - y) * log(1 - dados$pred_f)))
+res_p <- (y - dados$pred_f) / sqrt(dados$pred_f * (1 - dados$pred_f))
+## comparar com o modelo glm a titulo de conferir a conta (nao fiz)
+cor(dados$res_dev_f, residuals(m_aic, type = "deviance"))
+
+ggplot(dados, aes(pred_f, res_dev_f)) +
+  geom_point(alpha = 0.3) + geom_smooth(method = "loess", se = FALSE) +
+  labs(x = "Probabilidade ajustada (Firth)", y = "Resíduo deviance") # interpretar (mas resultados bons e esperados)
+```
+
+## Pontos Influentes
+```{r}
+# Leverage e distância de Cook (aproximadas)
+w <- dados$pred_f * (1 - dados$pred_f)
+h <- w * rowSums((X %*% V) * X)
+k <- length(b)
+dados$cook_f <- res_p^2 * h / (k * (1 - h)^2)
+
+plot(dados$cook_f, type = "h", ylab = "Distância de Cook (aprox.)")
+dados %>% slice_max(cook_f, n = 5) %>%
+  select(id, tipo_acidente_g, fase_dia, uso_solo, veiculos, vitima_grave_fatal, pred_f, cook_f)
+# quatro das cinco observações tem  sinistros com muitos veículos (5 a 11) e sem vítima grave ou fatal (o que não é esperado, veiculos é tratado com efeito linear no logito, quanto mais, mais provavel vitimas graves/fatais), principalmente engavetamentos, caso real de excecao que realmente envolve muitos carros e nao fere gravemente. o caso com 1 veiculo e resposta vitima grave/fatal tambem é possivel mas "incomum" pela relacao linear de veiculos (na realidade é comum em colisao com poste/suicidio, etc)
+```
+
+## Falta no diagnóstico:
+Forma funcional de veiculos (spline contra linear, no glm, já que os outros coeficientes quase não mudam).
+Sensibilidade: removendo as 3 observações de maior distância de Cook  (opcional, tem nos scripts do professor)
+```{r}
+idx <- order(dados$cook_f, decreasing = TRUE)[1:3]
+
+dados[idx, ] %>%
+  select(id, tipo_acidente_g, fase_dia, uso_solo, veiculos, vitima_grave_fatal, pred_f, cook_f)
+
+m_firth_sem <- logistf(formula(m_aic), data = dados[-idx, ])
+
+comp <- data.frame(
+  termo       = names(m_firth$coefficients),
+  coef_todos  = round(m_firth$coefficients, 3),
+  coef_sem3   = round(m_firth_sem$coefficients, 3),
+  OR_todos    = round(exp(m_firth$coefficients), 2),
+  OR_sem3     = round(exp(m_firth_sem$coefficients), 2),
+  IC_todos    = paste0(round(exp(m_firth$ci.lower), 2), " a ", round(exp(m_firth$ci.upper), 2)),
+  IC_sem3     = paste0(round(exp(m_firth_sem$ci.lower), 2), " a ", round(exp(m_firth_sem$ci.upper), 2))
+)
+comp$var_pct <- round(100 * (comp$OR_sem3 - comp$OR_todos) / comp$OR_todos, 1)
+rownames(comp) <- NULL
+comp
+
+# maior mudança relativa e termos que mudaram de significância
+comp %>% arrange(desc(abs(var_pct))) %>% head(5)
+```
+
+
+
+
+
+
+# Resultados: NAO REVISEI
+```{r}
+car::Anova(m_aic, type = "II")                  # LRT por variável (fator inteiro)
+anova(m0, m_aic, test = "Chisq")                # modelo final contra o nulo
+### Todas variáveis significativas
+
+# Estimativas e intervalors de confiança
+
+
+tab_or <- tidy(m_aic, exponentiate = TRUE, conf.int = TRUE) |>
+  filter(term != "(Intercept)") |>
+  transmute(termo = term,
+            OR = round(estimate, 2),
+            IC_inf = round(conf.low, 2),
+            IC_sup = round(conf.high, 2),
+            p = signif(p.value, 2))
+tab_or
+### Problema no acidente por incendio
+
+
+## OR: razão entre as chances
+##Interpretações:
+# veiculos: a cada veiculo adicional, a chance de vitima grave aumenta 1,45 vezes
+#fase do dia: amanhecer é a referencia, a chance de vitma fatal em plena noite é 1,18vezes a de referencia
+### Tipo de acidente, atropelamento de pessoa é 5vezes maior a de ref
+
+
+# ex predição
+levels(dados$fase_dia); levels(dados$uso_solo); levels(dados$tipo_acidente_g)
+
+novo <- data.frame(
+  veiculos        = 2,
+  fase_dia        = "Pleno dia",
+  uso_solo        = "Sim",
+  tipo_acidente_g = "Engavetamento"
+)
+
+# probabilidade com IC 95% (IC feito no logito e depois transformado)
+pr <- predict(m_aic, newdata = novo, type = "link", se.fit = TRUE)
+data.frame(
+  prob = plogis(pr$fit),
+  inf  = plogis(pr$fit - 1.96 * pr$se.fit),
+  sup  = plogis(pr$fit + 1.96 * pr$se.fit)
+)
+```
+
+### Grafico probs esperadas com intervalo de confiança
+```{r}
+
+
+
+# (a) Probabilidade por tipo de acidente, ajustada pelas demais variáveis
+p1 <- ggpredict(m_aic, terms = "tipo_acidente_g")
+plot(p1) +
+  labs(x = NULL, y = "Probabilidade de vítima grave/fatal",
+       title = NULL) +
+  coord_flip()
+
+# (b) Probabilidade segundo o número de veículos, por fase do dia
+p2 <- ggpredict(m_aic, terms = c("veiculos [1:8]", "fase_dia"))
+plot(p2) +
+  labs(x = "Número de veículos", y = "Probabilidade de vítima grave/fatal",
+       colour = "Fase do dia")
+```
+
