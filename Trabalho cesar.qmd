@@ -70,7 +70,7 @@ dados <- dados %>%
 ```
 
 
-Tratamentos
+### Tratamentos
 
 ```{r}
 ## Tratamentos pendentes nas variaveis
@@ -98,7 +98,7 @@ View(dados)
 # A indicadora de obras/desvio tem 29 eventos, abaixo do limite prático adotado (30), mantida por relevância ao problema e monitorada no ajuste.
 ```
 
-Ignorados
+### Ignorados
 
 ```{r}
 ## Questao do estado fisico ignorado pedido pelo professor -> talvez deveria ter sido feito logo no começo, pra ter os numeros das outras variaveis (exploratória) ja descartando os excluídos:
@@ -123,15 +123,29 @@ dados <- dados %>%
 nrow(dados) # 3.785
 
 
-## categorias de tipo de acidente com menos de 30 ocorrencias viram Outros; colisao traseira é a categoria com mais ocorrencias, entao sera usada como referencia pro modelo 
+## Categorias de tipo de acidente com menos de 30 ocorrências viram "Outros".
+## Em todos os fatores, a referência é a categoria mais frequente.
 dados <- dados %>%
-  mutate(tipo_acidente_g = fct_lump_min(factor(tipo_acidente), min = 30, other_level = "Outros"),
-         tipo_acidente_g = relevel(tipo_acidente_g, ref = "Colisão traseira"))
-nrow(dados) # 3.785
+  mutate(
+    tipo_acidente_g = fct_lump_min(factor(tipo_acidente), min = 30, other_level = "Outros"),
+    tipo_acidente_g = fct_infreq(tipo_acidente_g),
+    fase_dia               = fct_infreq(factor(fase_dia)),
+    uso_solo               = fct_infreq(factor(uso_solo)),
+    condicao_metereologica = fct_infreq(factor(condicao_metereologica)),
+    tipo_pista             = fct_infreq(factor(tipo_pista)),
+    dia_semana             = fct_infreq(factor(dia_semana))
+  )
+# tracado_grupo já tem "Reta/Outros" como referência (definida antes)
+
+nrow(dados)  # 3.785
+
+# conferir a referência (primeiro nível) de cada fator
+sapply(dados[c("tipo_acidente_g", "fase_dia", "uso_solo", "condicao_metereologica",
+               "tipo_pista", "dia_semana", "tracado_grupo")],
+       function(x) levels(x)[1])
 ```
 
-
-## Não usar como preditores: mortos, feridos_graves, feridos e classificacao_acidente, que revelam a resposta; feridos_leves e ilesos também são componentes das mesmas contagens, é mais seguro excluí-los. (nota do professor: excluir dos preditores os campos referentes ao estado físico das pessoas e classificacao_acidente)
+! Não usar como preditores: mortos, feridos_graves, feridos e classificacao_acidente, que revelam a resposta; feridos_leves e ilesos também são componentes das mesmas contagens, é mais seguro excluí-los. (nota do professor: excluir dos preditores os campos referentes ao estado físico das pessoas e classificacao_acidente)
 
 
 # Análise Exploratória
@@ -452,16 +466,31 @@ comparar <- function(mods, criterio = c("AIC", "BIC")) {
   tab
 }
 
+# Todos os modelos
+mods_aic <- list(
+  Backward = m_back_aic,
+  Forward  = m_for_aic,
+  Stepwise = m_step_aic
+)
+
+mods_bic <- list(
+  Backward = m_back_bic,
+  Forward  = m_for_bic,
+  Stepwise = m_step_bic
+)
+
+
 comparar(mods_aic, "AIC")   # só a coluna AIC
 comparar(mods_bic, "BIC")   # só a coluna BIC
 
-## pior método: forward, step e backward ficaram iguais
+## pior método: forward; step e backward ficaram iguais no aic e bic porque o stepwise partiu do modelo completo, então no começo só podia remover variáveis, igual ao backward. Nenhuma das removidas voltou a melhorar o critério, então os dois percorreram o mesmo caminho e pararam no mesmo modelo final.
 ```
 
 ```{r}
 AIC(m0, modelo_completo, m_back_aic, m_back_bic, m_for_aic, m_for_bic, m_step_aic,m_step_bic)
 BIC(m0, modelo_completo, m_back_aic, m_back_bic, m_for_aic, m_for_bic, m_step_aic,m_step_bic)
 
+#avaliando o uso do bic
 formula(m_back_bic) # remove fase_dia e uso_solo
 anova(m_bic, m_final, test = "Chisq") # fase do dia e uso do solo, juntos, melhoram o ajuste de forma significativa, então o BIC removeu variáveis que importam -> escolher backward por AIC
 ```
@@ -475,23 +504,26 @@ car::Anova(m_final, type = "II")
 ## comparando o modelo escolhido com o modelo nulo e o completo
 anova(m_final, modelo_completo, test = "Chisq")  # p alto = não perdeu ajuste
 
-##Interpretação: sob a hipótese nula, uma piora de ajuste de 32,19 com 21 parâmetros extras seria esperada por acaso em cerca de 5,6% das vezes. Em média, um qui-quadrado com 21 gl vale 21, então 32 é um pouco acima do esperado, mas não muito.
-##O modelo reduzido não perde ajuste de forma significativa (a 5%), então ele é preferível: é mais simples e tem AIC menor.
-
-### rodei com os dados reduzidos: O teste da razão de verossimilhanças entre o modelo reduzido e o completo (diferença de deviance = 30,1; 20 gl; p = 0,068) não indicou piora significativa do ajuste a 5% ao remover condição meteorológica, tipo de pista, traçado da via e dia da semana. O modelo reduzido tem menor AIC. (mesma coisa, valores diferentes)
+##Interpretação: O teste da razão de verossimilhanças entre o modelo reduzido e o completo (diferença de deviance = 30,1; 20 gl; p = 0,068) não indicou piora significativa do ajuste a 5% ao remover condição meteorológica, tipo de pista, traçado da via e dia da semana, embora o p esteja próximo do limite. O modelo reduzido (o final escolhido como backward aic) é mais parcimonioso e tem menor AIC. 
 
 ```
 
 ## Prof mostrou metodos de regularização p escolher variavel tbm, será q testamos? 
+Vamos precisar por conta do problema de separação
+
 
 # Análise de Diagnóstico
+## Multicolinearidade
 ```{r}
 # modelo final: aic
 m_aic <- m_final
 
 # Multicolinearidade
-car::vif(m_aic)   # todos menores que o usual 2 -> sem evidencia de multic
+car::vif(m_aic)   # avaliada pelo GVIF ajustado (GVIF^(1/(2·gl))). Valores ficaram entre 1,01 e 1,47, abaixo do limite usual de 2, sem indício de multicolinearidade entre os preditores do modelo final.
+```
 
+## Resíduos deviance
+```{r}
 # Resíduos (deviance) vs. valores ajustados, com suavização
 dados$res_dev <- residuals(m_aic, type = "deviance")
 dados$pred <- predict(m_aic, type = "response")
@@ -500,12 +532,34 @@ ggplot(dados, aes(pred, res_dev)) +
   geom_point(alpha = 0.3) +
   geom_smooth(method = "loess", se = FALSE) +
   labs(x = "Probabilidade ajustada", y = "Resíduo deviance")
-# resultado bom, mas verificar casos em que a prob foi quase certa em 0 e 1, devem ser excecoes
-summary(m_aic)$coefficients %>% round(2) # caso com prob 0: incendio com valor estimado muito alto: nao tem vitimas fatais ou graves
-dados %>% filter(tipo_acidente == "Incêndio") %>%
-  count(vitima_grave_fatal, com_ignorado = ignorados > 0) # sem ignorados
-# a dúvida aqui é como prosseguir: agrupa incendios em outros, deixa como esta ou exclui? quais sao os impactos?
+# resultado bom no geral, mas verificar casos em que a prob foi quase certa em 0 e 1, devem ser excecoes = fitted values extremos (de acordo com os slides)
+summary(m_aic)$coefficients %>% round(2) # caso com prob 0: incendio com erro padrao absurdo ~237 (tambem é medida de diagnostico nos slides) -> ja dava pra saber pela analise exploratoria...
+dados %>% filter(tipo_acidente_g == "Incêndio") %>%
+  count(vitima_grave_fatal, com_ignorado = ignorados > 0) # sem ignorados, todos os 101 casos tem resposta 0
+```
 
+### Avaliando tipo_acidente = incendio: problema de separacao
+```{r}
+# Medidas corretivas
+## Possibilidades de acordo com os slides (todas mudariam a modelagem): regressão logística penalizada (ex: método ridge); estimação Bayesiana, especificando distribuições a priori (fracamente) informativas para os parâmetros do modelo; Regressão logística com correção de viés de Firth; Agrupar categorias de preditores para evitar separação; Coletar mais dados para cobrir combinações de preditores e respostas (essa última não aplicável, nem a ridge, pois nao resulta em IC nem p-valor, exigidas pelo professor, nem a bayesiana).
+# excluir incendio nao esta nos slides, mas talvez poderia ser uma opcao por haver "apenas" 101 dados 
+
+## Opção 1: Regressão logística com correção de viés de Firth
+
+
+## Opção 2: Agrupar categorias de preditores para evitar separação - agrupar em "outros"
+
+
+# níveis com 0 eventos ou só eventos, em cada preditor categórico
+map_dfr(vars8, ~ tab_prop(.x) %>% mutate(variavel = .x)) %>%
+  filter(eventos == 0 | eventos == n) %>%
+  select(variavel, categoria, n, eventos)
+# olhar tambem caso em que da quase 1
+```
+
+
+## Pontos influentes
+```{r}
 # Pontos influentes por distancia de Cook 
 plot(m_aic, which = 4) # 3 pontos se destacam
 dados_final %>% # pegando 5 maiores distancias
@@ -597,3 +651,10 @@ plot(p2) +
        colour = "Fase do dia")
 ```
 
+
+# Falta no diagnóstico:
+Sensibilidade removendo as mais influentes (update + modelsummary).
+Resíduos quantílicos (statmod::qres.binom) e QQ.
+Envelope simulado (hnp::hnp).
+Hosmer-Lemeshow e curva de calibração.
+Forma funcional de veiculos (crPlots ou o teste com ns).
