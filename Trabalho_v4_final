@@ -1,0 +1,250 @@
+---
+title: "Modelagem em dados da PRF"
+author: "Cristiane Huang Zhu e Júlia Zorzo Ferreira"
+format: html
+editor: visual
+---
+
+Pacotes
+```{r}
+#install.packages("tidyverse")
+#install.packages("rcompanion")
+library(rcompanion)
+library(tidyverse)
+library(readr)
+library(broom)
+library(ggeffects)
+library(logistf)
+```
+
+Tema/objetivo: Quais características estão associadas à presença de vítimas graves ou fatais nos sinistros do Rio de Janeiro?
+
+# Cores parecidas com transito
+vermelho = "#B0323A"
+bege = "#F0D8C3"
+mostarda = "#C87C0C"
+grafite = "#2B3537"
+cinza azulado = "#8AA8AB"
+
+
+# Dados
+
+## Pré-processamento
+
+### Chamada do dataset 
+```{r}
+# Fonte: https://www.gov.br/prf/pt-br/acesso-a-informacao/dados-abertos/dadosabertos-da-prf
+# Data da extração: 29/10/2026
+# Última modificação do site em 28/07/2026 15:45
+# Período efetivamente coberto pelos dados: 01/01/2026 a 31/08/2026
+
+
+dados <-  read_delim("datatran2026.csv", 
+    delim = ";", escape_double = FALSE, trim_ws = TRUE, locale = locale(encoding = "ISO-8859-1" ))
+# TAMANHO: 48.712 observações e 30 colunas
+# UNIDADE: sinistro
+```
+
+### Filtro do estado RJ
+```{r}
+dados <- dados %>%
+  filter(uf == "RJ")
+nrow(dados)
+# NOVO TAMANHO: 4.366
+```
+
+### Transformação das variáveis para a variável resposta binária
+```{r}
+# Variável Resposta: variável binária, definida como 1 quando feridos_graves > 0 ou mortos > 0 e 0 quando ambos são iguais a 0 
+# Para isso, é preciso criar uma nova variável binária que combine as duas colunas
+dados <- dados %>%
+  mutate(
+    vitima_grave_fatal = if_else(
+      feridos_graves > 0 | mortos > 0,
+      1,
+      0
+    )
+  )
+```
+
+
+### Redução de colunas
+Tirar variáveis que não vamos utilizar: números de ocorrencia, delegacia, causa do acidente (suicídio provavelmente é fatal, muitas categorias - problema de separaçao, nao estava na lista de candidatos), municipio, km..., variaveis que tem relacao direta com a resposta: mortos, feridos, ilesos, pessoas, classificacao do acidente (com vitimas, sem, com vitimas feridas...)
+```{r}
+dados <- dados %>%
+  select(-uf, -uop, -delegacia, -regional, -longitude, -latitude,
+         -causa_acidente, -municipio, -km, -br, -horario, 
+         -mortos, -feridos_graves, -feridos, -classificacao_acidente,
+         -feridos_leves, -ilesos, -pessoas, -data_inversa)
+```
+
+
+## Tratamentos
+
+### Analisando a quantidade de categorias por variável
+
+```{r}
+tab_niveis <- data.frame(
+  variavel = names(dados),
+  tipo     = sapply(dados, function(x) class(x)[1]),
+  n_niveis = sapply(dados, n_distinct),
+  n_NA     = sapply(dados, function(x) sum(is.na(x)))
+) %>%
+  arrange(desc(n_niveis))
+
+rownames(tab_niveis) <- NULL
+tab_niveis
+
+## trancado_via = 114 e tipo_acidente = 17
+```
+
+### Variável tracado_grupo
+Agrupamento de tracado_via: muitas categorias (114)
+```{r}
+dados %>% count(tracado_via, sort = TRUE) %>% print(n = Inf)
+
+# agrupando as categorias em uma coluna só (tracado_grupo)
+dados <- dados %>%
+  mutate(
+    tracado_grupo = case_when(
+      str_detect(tracado_via, "Interseção|Rotatória|Retorno") ~ "Interseção",
+      str_detect(tracado_via, "Em Obras|Desvio")              ~ "Obras",
+      str_detect(tracado_via, "Ponte|Viaduto|Túnel")          ~ "Ponte/Viaduto/Túnel",
+      str_detect(tracado_via, "Curva")                        ~ "Curva",
+      str_detect(tracado_via, "Declive")                      ~ "Declive",
+      str_detect(tracado_via, "Aclive")                       ~ "Aclive",
+      TRUE                                                    ~ "Reta"
+    ),
+    tracado_grupo = relevel(factor(tracado_grupo), ref = "Reta")  # categoria mais frequente como referência
+  )
+
+# Qual foi o critério:
+#Em sinistros com mais de uma característica do traçado, atribuiu-se o grupo de maior prioridade, na ordem: interseção, obras, ponte/viaduto/túnel, curva, declive e aclive; trechos retos sem outra característica formam a referência.
+
+# Ver quantidade e proporcao por categoria:
+dados %>%
+  group_by(tracado_grupo) %>%
+  summarise(n = n(),
+            eventos = sum(vitima_grave_fatal),
+            prop = round(eventos / n, 3),
+            esperado = round(n * mean(dados$vitima_grave_fatal), 1),
+            .groups = "drop") %>%
+  arrange(desc(n)) # quantidade esperada próxima, parece um bom candidato de fato
+
+View(dados)
+```
+
+### Ignorados
+```{r}
+## Questao do estado fisico ignorado
+
+dados %>% count(vitima_grave_fatal, com_ignorado = ignorados > 0) # 537 nao fatais/graves ignorados
+
+## Nova base: Sinistros sem vítima grave/fatal identificada, mas com pessoas de estado físico ignorado (n = 537), foram excluídos da análise principal, pois a resposta é indeterminada.
+dados_princ <- dados %>%
+  filter(!(vitima_grave_fatal == 0 & ignorados > 0))
+nrow(dados_princ) # 3.829 dados agora
+
+
+## ignorados nas var categoricas:
+dados %>% select(fase_dia, condicao_metereologica, tipo_pista, uso_solo, dia_semana, tipo_acidente) %>%
+  summarise(across(everything(), ~ sum(.x == "Ignorado", na.rm = TRUE))) # 52 em condicao metereologica
+
+dados %>% filter(condicao_metereologica == "Ignorado") %>% count(vitima_grave_fatal)
+### exclusao desses 52 por representarem poucos casos (como vamos testar como preditor, ja excluímos desde já)
+
+## Base final sobrescrita sem ignorados
+dados <- dados %>%
+  filter(!(vitima_grave_fatal == 0 & ignorados > 0),
+         condicao_metereologica != "Ignorado")
+nrow(dados) # 3.785
+```
+
+### Variável tipo_acidente_g
+```{r}
+## Categorias de tipo de acidente com menos de 30 ocorrências viram "Outros".
+## Em todos os fatores, a referência é a categoria mais frequente.
+dados <- dados %>%
+  mutate(
+    tipo_acidente_g = fct_lump_min(factor(tipo_acidente), min = 30, other_level = "Outros"),
+    tipo_acidente_g = fct_infreq(tipo_acidente_g),
+    fase_dia               = fct_infreq(factor(fase_dia)),
+    uso_solo               = fct_infreq(factor(uso_solo)),
+    condicao_metereologica = fct_infreq(factor(condicao_metereologica)),
+    tipo_pista             = fct_infreq(factor(tipo_pista)),
+    dia_semana             = fct_infreq(factor(dia_semana))
+  )
+
+nlevels(dados$tipo_acidente_g)      # categorias depois do agrupamento outros = 15
+n_distinct(dados$tipo_acidente)     # categorias antes = 17
+
+dados %>% count(tipo_acidente_g, sort = TRUE)     # tamanho de cada nível
+dados %>% filter(tipo_acidente_g == "Outros") %>%
+  count(tipo_acidente, sort = TRUE)             # o que entrou em "Outros": eventos atipicos, derramamento de carga, sinistro pessoal de transito
+# tracado_grupo já tem "Reta" como referência (definida anteriormente em tracado_grupo)
+
+# conferir a referência (primeiro nível) de cada fator
+sapply(dados[c("tipo_acidente_g", "fase_dia", "uso_solo", "condicao_metereologica",
+               "tipo_pista", "dia_semana", "tracado_grupo")],
+       function(x) levels(x)[1])
+
+dados <- dados %>%
+  select(#-tipo_acidente
+    -ignorados)
+
+View(dados)
+```
+
+### id's duplicados
+```{r}
+sum(duplicated(dados$id)) 
+```
+
+### Verificar valores ausentes
+```{r}
+colSums(is.na(dados)) # sem valores ausentes
+```
+
+### Resultado dataset final
+```{r}
+glimpse(dados)
+# 3.785 dados, 12 colunas, só veiculos (qtde) numérica
+```
+uso_solo = sim para urbano e não para rural
+
+
+# Análise Exploratória
+
+## Variável Resposta
+```{r}
+# Proporção de 0 e 1 da var. resposta
+tab_resp <- dados %>%
+  count(vitima_grave_fatal) %>%
+  mutate(prop = round(100 * n / sum(n), 1))
+tab_resp
+## 0: 77.2%, 1: 22.8%
+
+dados %>%
+  count(vitima_grave_fatal) %>%
+  mutate(prop = n / sum(n),
+         rotulo = paste0(format(n, big.mark = ".", decimal.mark = ","), " (",
+                         format(round(100 * prop, 1), decimal.mark = ","), "%)"),
+         resposta = factor(vitima_grave_fatal, levels = c(0, 1),
+                           labels = c("Sem vítima grave/fatal", "Com vítima grave/fatal"))) %>%
+  ggplot(aes(resposta, n, fill = resposta)) +
+  geom_col(width = 0.6, show.legend = FALSE) +
+  geom_text(aes(label = rotulo), vjust = -0.5, size = 4) +
+  scale_fill_manual(values = c("#B0323A", "#8AA8AB")) +
+  scale_y_continuous(expand = expansion(mult = c(0, 0.12)),
+                     labels = scales::label_number(big.mark = ".", decimal.mark = ",")) +
+  labs(x = NULL, y = "Número de sinistros") +
+  theme_minimal(base_size = 13) +
+  theme(panel.grid.major.x = element_blank())
+
+```
+
+
+
+## Preditores
+Preditores candidatos: fase do dia, condição meteorológica, tipo de pista,
+traçado da via, uso do solo, dia da semana, tipo de sinistro, número de veículos envolvidos 
