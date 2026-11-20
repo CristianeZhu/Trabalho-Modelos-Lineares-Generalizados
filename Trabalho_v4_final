@@ -570,29 +570,26 @@ comp_incendio <- data.frame(
 comp_incendio %>%
   mutate(across(where(is.numeric), ~ round(.x, 3)))
 
-# mesmos betas e razoes de chance quando comparamos o modelo final com o modelo final sem incendios -> podemos excluir
+# mesmos betas e razoes de chance quando comparamos o modelo final com o modelo final sem incendios 
 ```
+Como os resultados não apresentam mudanças de uma versao pra outra, optamos por manter incendios, porque excluir exigiria refazer a modelagem.
 
-### Novo modelo final
-```{r}
-# só renomeei
-modelo_ajus_final <- m_sem_incendio
-```
 
 ## Multicolinearidade
 ```{r}
-car::vif(modelo_ajus_final) # 1 a 1.59: bom (>5 preocupante)
+car::vif(m_final) # 1 a 1.59: bom (>5 preocupante)
 ```
 
-## Resíduos Deviance
+## Resíduos
+### Resíduos Deviance
 * O Cesar destacou nos slides que para respostas discretas, como a binária do nosso modelo, os resíduos de deviance podem não apresentar o comportamento usual mesmo quando o modelo está bem ajustado -> fiz da mesma forma, mas nao avaliei os 126 pontos com residuo > 2, fiz na sequencia outra analise de residuos que ele passa
 ```{r}
 # Resíduos de deviance
-res_dev <- residuals(modelo_ajus_final, type = "deviance")
+res_dev <- residuals(m_final, type = "deviance")
 
 # Gráfico dos resíduos versus valores ajustados
 plot(
-  fitted(modelo_ajus_final),
+  fitted(m_final),
   res_dev,
   xlab = "Probabilidades ajustadas",
   ylab = "Resíduos de deviance",
@@ -604,11 +601,11 @@ abline(h = 0, lty = 2, col = "#B0323A") # pra mim nao ta indo, diz que o grafico
 sum(abs(res_dev) > 2)  # 126 -> 3,3% da base
 sum(abs(res_dev) > 3)
 
-# Observações com resíduos acima de 2 em módulo
+# Observações com resíduos acima de 2
 which(abs(res_dev) > 2)
 ```
 
-## Envelope simulado
+### Envelope simulado
 ```{r}
 install.packages("hnp")
 library(hnp)
@@ -617,23 +614,23 @@ library(hnp)
 set.seed(123)
 
 hnp(
-  modelo_ajus_final,
+  m_final,
   how.many = 99,
   print.on = TRUE,
   main = "Envelope simulado - Modelo final",
   xlab = "Escore meio-normal",
   ylab = "Resíduos de deviance"
 )
-# perfeito, 13 pontos fora do envelope
+# perfeito, 7 pontos fora do envelope
 ```
 
 ## Pontos influentes
 ```{r}
-n <- nobs(modelo_ajus_final)
-p <- length(coef(modelo_ajus_final))
+n <- nobs(m_final)
+p <- length(coef(m_final))
 
 # Distância de Cook
-cook <- cooks.distance(modelo_ajus_final)
+cook <- cooks.distance(m_final)
 
 plot(cook, type = "h",
      main = "Distância de Cook",
@@ -645,11 +642,11 @@ abline(h = 4/n, col = "red", lty = 2)
 
 # 10 observações com maior distância de Cook
 head(sort(cook, decreasing = TRUE), 10)
-# a maior tem 0.018, caindo pra 0.011 e 0.10, muito baixas
+# a maior tem 0.0176, caindo pra 0.011 e 0.010, muito baixas, deixamos assim.
 
 
 # Leverage (alavancagem)
-lev <- hatvalues(modelo_ajus_final)
+lev <- hatvalues(m_final)
 
 plot(lev, type = "h",
      main = "Alavancagem (Leverage)",
@@ -658,24 +655,118 @@ plot(lev, type = "h",
 
 abline(h = 2*p/n, col = "red", lty = 2)
 
-sum(lev > 2*p/n) # medida de alta alavancagem segundo os slides: 336 observacoes (9% da base)
+sum(lev > 2*p/n) # medida de alta alavancagem segundo os slides: 354 observacoes (9.35% da base)
 # which(lev > 2*p/n)
 
 # 10 maiores valores de leverage
 head(sort(lev, decreasing = TRUE), 10)
 
+# Perfil dos 9.35% de alta alavancagem
+dados %>%
+  mutate(lev = lev,
+         alta_lev = lev > 2*p/n) %>%
+  filter(alta_lev) %>%
+  count(tipo_acidente_g, fase_dia, uso_solo, sort = TRUE) %>%
+  head(15)
+
+# E o perfil de veiculos entre os de alta leverage
+dados %>%
+  mutate(lev = lev, alta_lev = lev > 2*p/n) %>%
+  group_by(alta_lev) %>%
+  summarise(n = n(),
+            veiculos_mediana = median(veiculos),
+            veiculos_max = max(veiculos),
+            prop_evento = round(mean(vitima_grave_fatal), 3))
+# em geral de acidentes raros (n pequeno), como atropelamento de animais e colisão lateral sentido oposto, como a distância de Cook é extremamente baixa, elas não estão influenciando os coeficientes de regressão
+
 # Observações entre as 10 maiores medidas de cada diagnóstico
 top_cook <- names(head(sort(cook, decreasing = TRUE), 10))
 top_lev <- names(head(sort(lev, decreasing = TRUE), 10))
 
-# em comum:
+# em comum: "943"  "2933 (muito pouco pra excluir)
 intersect(top_cook, top_lev)
 
-
-
-# Excluir temporariamente as observações 908 e 2852? 9% é muito?
-dados_sens <- dados[-c(908, 2852), ]
-
-# ainda falta intervalos de confianca?
 ```
 
+## Adequação da relação funcional
+Verificada no grafico de veiculos (melhor relacao - log) - unica variavel continua
+
+
+# Resultados
+## significância
+```{r}
+# 1. Teste global TRV (LRT contra o nulo) 
+anova(m0, m_final, test = "Chisq") # modelo final explica mais que o nulo
+
+# 2. Teste por variável (LRT drop-one)
+drop1(m_final, test = "Chisq")
+# tipo_acidente_g (270,8) > log1p(veiculos) (179,0) > fase_dia (15,7) > uso_solo (7,1) -> todas significativas
+
+# Alternativa: car::Anova type II (equivalente para fatores sem interação)
+car::Anova(m_final, type = "II")
+# mesmo resultado
+```
+## OR e IC
+```{r}
+tab_or <- tidy(m_final, exponentiate = TRUE, conf.int = TRUE) |>
+  filter(term != "(Intercept)") |>
+  transmute(
+    termo  = term,
+    OR     = round(estimate, 2),
+    IC_inf = round(conf.low, 2),
+    IC_sup = round(conf.high, 2),
+    p      = signif(p.value, 2)
+  )
+tab_or
+
+# Conferir a referência de cada fator (para escrever a interpretação certa)
+sapply(dados[c("fase_dia", "uso_solo", "tipo_acidente_g")],
+       function(x) levels(x)[1])
+# pleno dia, nao, colisao traseira
+```
+
+```{r}
+novos <- expand.grid(
+  veiculos        = c(2, 5),
+  fase_dia        = c("Pleno dia", "Plena Noite"),
+  uso_solo        = "Sim",
+  tipo_acidente_g = c("Engavetamento", "Atropelamento de Pedestre")
+)
+
+pr <- predict(m_final, newdata = novos, type = "link", se.fit = TRUE)
+
+novos$prob <- plogis(pr$fit)
+novos$inf  <- plogis(pr$fit - 1.96 * pr$se.fit)
+novos$sup  <- plogis(pr$fit + 1.96 * pr$se.fit)
+novos |>
+  mutate(across(c(prob, inf, sup), ~ round(.x, 3))) |>
+  print()
+```
+
+
+## probabilidade por tipo de acidente (com IC) 
+```{r}
+p_tipo <- ggpredict(m_final, terms = "tipo_acidente_g") |>
+  ggplot(aes(x = fct_reorder(x, predicted), y = predicted)) +
+  geom_pointrange(aes(ymin = conf.low, ymax = conf.high), colour = "#B0323A") +
+  coord_flip() +
+  scale_y_continuous(labels = scales::percent) +
+  labs(x = NULL, y = "Probabilidade de vítima grave/fatal (IC 95%)") +
+  theme_minimal(base_size = 13) +
+  theme(panel.grid.major.y = element_blank())
+p_tipo
+```
+
+
+## veículos × fase do dia (com IC)
+```{r}
+p_veic <- ggpredict(m_final, terms = c("veiculos [1:8]", "fase_dia")) |>
+  ggplot(aes(x = x, y = predicted, colour = group, fill = group)) +
+  geom_ribbon(aes(ymin = conf.low, ymax = conf.high), alpha = 0.2, colour = NA) +
+  geom_line() +
+  scale_y_continuous(labels = scales::percent) +
+  labs(x = "Número de veículos", y = "Probabilidade de vítima grave/fatal (IC 95%)",
+       colour = "Fase do dia", fill = "Fase do dia") +
+  theme_minimal(base_size = 13)
+p_veic
+```
